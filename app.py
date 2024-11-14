@@ -8,6 +8,10 @@ app = Flask(__name__)
 def payment_callback():
     return jsonify({"response_code": "OK"}), 200
 
+@app.route('/finish', methods=['GET'])
+def payment_finish():
+    return jsonify({"response_code": "OK"}), 200
+
 
 if __name__ == '__main__':
     server = WSGIServer(('45.90.46.50', 5000), app)
