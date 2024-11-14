@@ -1,4 +1,5 @@
 from flask import Flask, jsonify
+from gevent.pywsgi import WSGIServer
 
 app = Flask(__name__)
 
@@ -9,4 +10,5 @@ def payment_callback():
 
 
 if __name__ == '__main__':
-    app.run(debug=True)
+    server = WSGIServer(('45.90.46.50', 5000), app)
+    server.serve_forever()
