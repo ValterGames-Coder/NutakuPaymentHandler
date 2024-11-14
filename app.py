@@ -4,11 +4,11 @@ from gevent.pywsgi import WSGIServer
 app = Flask(__name__)
 
 
-@app.route('/callback', methods=['GET'])
+@app.route('/callback', methods=['GET', 'POST'])
 def payment_callback():
     return jsonify({"response_code": "OK"}), 200
 
-@app.route('/finish', methods=['GET'])
+@app.route('/finish', methods=['GET', 'POST'])
 def payment_finish():
     return jsonify({"response_code": "OK"}), 200
 
