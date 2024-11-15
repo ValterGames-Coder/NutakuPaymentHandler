@@ -1,5 +1,6 @@
 from flask import Flask, jsonify
 from gevent.pywsgi import WSGIServer
+import host
 
 app = Flask(__name__)
 
@@ -14,5 +15,5 @@ def payment_finish():
 
 
 if __name__ == '__main__':
-    server = WSGIServer(('45.90.46.50', 5000), app)
+    server = WSGIServer((host.ip, host.port), app)
     server.serve_forever()
