@@ -22,5 +22,5 @@ def get_file_url(filename):
     return send_from_directory(full_path, filename)
 
 if __name__ == '__main__':
-    server = WSGIServer((host.host, host.port), app)
+    server = WSGIServer((host.ip, host.port), app)
     server.serve_forever()
