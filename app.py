@@ -19,7 +19,7 @@ def payment_finish():
 @app.route('/images/<filename>', methods=['GET'])
 def get_file_url(filename):
     full_path = os.path.join(app.root_path, app.config['UPLOAD_FOLDER'])
-    return send_from_directory(full_path, filename)
+    return send_from_directory(full_path, filename, as_attachment=True)
 
 if __name__ == '__main__':
     server = WSGIServer((host.ip, host.port), app)
