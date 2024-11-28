@@ -11,17 +11,18 @@ from functools import wraps
 from flask import Flask, request, jsonify, send_from_directory
 from gevent.pywsgi import WSGIServer
 import sqlite3
+import host
 
 
 class Config:
     # API Settings
     NUTAKU_API_BASE = "https://osapi.nutaku.com/social_android/rest/"
-    CONSUMER_KEY = os.environ.get('NUTAKU_CONSUMER_KEY', 'YOUR_CONSUMER_KEY')
-    CONSUMER_SECRET = os.environ.get('NUTAKU_CONSUMER_SECRET', 'YOUR_CONSUMER_SECRET')
+    CONSUMER_KEY = os.environ.get('NUTAKU_CONSUMER_KEY', 'j0TXH1blsH66HRrQ')
+    CONSUMER_SECRET = os.environ.get('NUTAKU_CONSUMER_SECRET', 'U1VVMaD@bhLkHgkR?9CI0EVc]R]Kwsn[')
 
     # Server Settings
-    ip = "0.0.0.0"
-    port = 5000
+    ip = host.ip
+    port = host.port
 
     # Security
     # ALLOWED_IMAGE_TYPES = {'.jpg', '.gif'}
@@ -354,15 +355,15 @@ def serve_image(filename):
             logger.warning(f"Attempted path traversal with filename: {filename}")
             return "Access denied", 403
 
-        safe_path = os.path.join(Config.IMAGES_FOLDER, filename)
+        safe_path = os.path.join(Config.UPLOAD_FOLDER, filename)
         if not os.path.exists(safe_path):
             return "File not found", 404
 
-        if not os.path.dirname(os.path.abspath(safe_path)) == os.path.abspath(Config.IMAGES_FOLDER):
+        if not os.path.dirname(os.path.abspath(safe_path)) == os.path.abspath(Config.UPLOAD_FOLDER):
             logger.warning(f"Attempted access outside images directory: {filename}")
             return "Access denied", 403
 
-        return send_from_directory(Config.IMAGES_FOLDER, filename)
+        return send_from_directory(Config.UPLOAD_FOLDER, filename)
     except Exception as e:
         logger.error(f"Error serving image {filename}: {str(e)}")
         return "Error serving image", 500
