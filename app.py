@@ -384,7 +384,7 @@ def internal_error(error):
 
 if __name__ == '__main__':
     # Ensure images folder exists
-    os.makedirs(Config.IMAGES_FOLDER, exist_ok=True)
+    os.makedirs(Config.UPLOAD_FOLDER, exist_ok=True)
 
     # Initialize database
     db.init_db()
