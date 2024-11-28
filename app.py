@@ -129,6 +129,7 @@ class OAuthSignature:
 
     def verify_signature(self, request):
         try:
+            print(request.headers.get('Authorization'))
             auth_header = request.headers.get('Authorization')
             if not auth_header or not auth_header.startswith('OAuth '):
                 logger.error("Missing or invalid Authorization header")
