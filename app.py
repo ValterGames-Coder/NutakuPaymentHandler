@@ -1,5 +1,4 @@
 import os
-<<<<<<< HEAD
 import time
 import logging
 from datetime import datetime, timedelta
@@ -10,24 +9,19 @@ from urllib.parse import urlparse, parse_qs, quote
 from functools import wraps
 
 from flask import Flask, request, jsonify, send_from_directory
-=======
-
-from flask import Flask, jsonify, send_from_directory
->>>>>>> a4dd6d582b9fcfbd862266875c3264c72c6296ef
 from gevent.pywsgi import WSGIServer
 import sqlite3
-import host
 
 
 class Config:
     # API Settings
     NUTAKU_API_BASE = "https://osapi.nutaku.com/social_android/rest/"
-    CONSUMER_KEY = os.environ.get('NUTAKU_CONSUMER_KEY', 'j0TXH1blsH66HRrQ')
-    CONSUMER_SECRET = os.environ.get('NUTAKU_CONSUMER_SECRET', 'U1VVMaD@bhLkHgkR?9CI0EVc]R]Kwsn[')
+    CONSUMER_KEY = os.environ.get('NUTAKU_CONSUMER_KEY', 'YOUR_CONSUMER_KEY')
+    CONSUMER_SECRET = os.environ.get('NUTAKU_CONSUMER_SECRET', 'YOUR_CONSUMER_SECRET')
 
     # Server Settings
-    ip = host.ip
-    port = host.port
+    ip = "0.0.0.0"
+    port = 5000
 
     # Security
     # ALLOWED_IMAGE_TYPES = {'.jpg', '.gif'}
@@ -235,7 +229,6 @@ class OAuthSignature:
 
 
 app = Flask(__name__)
-<<<<<<< HEAD
 app.config['UPLOAD_FOLDER'] = Config.UPLOAD_FOLDER
 
 db = Database()
@@ -260,9 +253,6 @@ def require_oauth(f):
         return f(*args, **kwargs)
 
     return decorated
-=======
-app.config['UPLOAD_FOLDER'] = 'images'
->>>>>>> a4dd6d582b9fcfbd862266875c3264c72c6296ef
 
 
 @app.route('/callback', methods=['GET', 'POST'])
@@ -355,10 +345,6 @@ def payment_finish():
     """Handle redirection after payment completion"""
     return jsonify({"response_code": "OK"}), 200
 
-@app.route('/images/<filename>', methods=['GET'])
-def get_file_url(filename):
-    full_path = os.path.join(app.root_path, app.config['UPLOAD_FOLDER'])
-    return send_from_directory(full_path, filename, as_attachment=True)
 
 @app.route('/images/<filename>')
 def serve_image(filename):
