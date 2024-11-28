@@ -152,13 +152,9 @@ class OAuthSignature:
             signing_key = self._generate_signing_key(
                 oauth_params.get('oauth_token_secret', '')
             )
-            print("signing_key: " + signing_key)
 
             expected_signature = self._generate_signature(base_string, signing_key)
             received_signature = oauth_params.get('oauth_signature', '')
-
-            print("expected_signature: " + expected_signature)
-            print("received_signature: " + received_signature)
 
             return hmac.compare_digest(
                 expected_signature.encode('utf-8'),
