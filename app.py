@@ -13,7 +13,6 @@ from gevent.pywsgi import WSGIServer
 import sqlite3
 import host
 
-
 class Config:
     # API Settings
     NUTAKU_API_BASE = "https://osapi.nutaku.com/social_android/rest/"
@@ -24,15 +23,16 @@ class Config:
     ip = host.ip
     port = host.port
 
-    # Security
-    # ALLOWED_IMAGE_TYPES = {'.jpg', '.gif'}
-    # MAX_IMAGE_SIZE = 5 * 1024 * 1024  # 5MB
-    # IMAGE_TOKEN_EXPIRE = timedelta(minutes=30)
-
     # Paths
     UPLOAD_FOLDER = 'images'
     DB_FILE = 'payments.db'
     LOG_FILE = 'payment_server.log'
+
+    # Payment Status Constants
+    PAYMENT_STATUS = {
+        'COMPLETED': 2,
+        'CANCELED': 3
+    }
 
 
 class Database:
@@ -53,6 +53,7 @@ class Database:
         CREATE TABLE IF NOT EXISTS payments (
             payment_id TEXT PRIMARY KEY,
             user_id TEXT NOT NULL,
+            owner_id TEXT NOT NULL,
             status INTEGER NOT NULL,
             ordered_time TEXT NOT NULL,
             item_id TEXT NOT NULL,
@@ -76,13 +77,14 @@ class Database:
 
         c.execute('''
         INSERT INTO payments (
-            payment_id, user_id, status, ordered_time,
+            payment_id, user_id, owner_id, status, ordered_time,
             item_id, item_name, quantity, unit_price, total_price,
             created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (
             payment_data['payment_id'],
             payment_data['user_id'],
+            payment_data['owner_id'],
             payment_data['status'],
             payment_data['ordered_time'],
             payment_data['item_id'],
@@ -103,7 +105,7 @@ class Database:
 
         c.execute('''
         UPDATE payments 
-        SET status = ?, updated_at = ? 
+        SET status = ?, updated_at = ?
         WHERE payment_id = ?
         ''', (new_status, datetime.utcnow().isoformat(), payment_id))
 
@@ -127,15 +129,80 @@ class OAuthSignature:
         self.consumer_key = consumer_key
         self.consumer_secret = consumer_secret
 
-    def verify_signature(self, request):
+    def _quote_uppercase(self, s):
+        quoted = quote(s, safe='')
+        # Convert hex digits to uppercase while preserving the % symbol
+        return ''.join(c.upper() if c.isalnum() else c for c in quoted)
+
+    def _get_payment_id_params(self, query_params):
+        payment_params = []
+        for k, v_list in query_params.items():
+            if k in ['payment_id', 'paymentId']:
+                for v in v_list:
+                    payment_params.append((k, v))
+        return payment_params
+
+    def _generate_signature_base_string(self, method, url, oauth_params, query_params):
+        """
+        Generate OAuth signature base string according to RFC 5849 and Nutaku specs
+        """
+        parsed_url = urlparse(url)
+        base_url = f"{parsed_url.scheme}://{parsed_url.netloc}{parsed_url.path}"
+
+        all_params = []
+
+        for k, v in oauth_params.items():
+            if k != 'oauth_signature':
+                all_params.append((k, self._quote_uppercase(v)))
+
+        payment_params = self._get_payment_id_params(query_params)
+
+        other_params = []
+        for k, v_list in query_params.items():
+            if k not in ['payment_id', 'paymentId']:
+                for v in v_list:
+                    other_params.append((k, v))
+
+        sorted_oauth_and_other = sorted(
+            [(k, self._quote_uppercase(v)) for k, v in other_params],
+            key=lambda x: (x[0], x[1])
+        )
+
+        for k, v in payment_params:
+            all_params.append((k, self._quote_uppercase(v)))
+        all_params.extend(sorted_oauth_and_other)
+
+        param_string = '&'.join(f"{k}={v}" for k, v in all_params)
+
+        base_string = '&'.join([
+            method.upper(),
+            self._quote_uppercase(base_url),
+            self._quote_uppercase(param_string)
+        ])
+
+        return base_string
+
+    def _generate_signing_key(self, token_secret=''):
+        return f"{self._quote_uppercase(self.consumer_secret)}&{self._quote_uppercase(token_secret if token_secret else '')}"
+
+    def _generate_signature(self, base_string, signing_key):
+        hashed = hmac.new(
+            signing_key.encode('utf-8'),
+            base_string.encode('utf-8'),
+            hashlib.sha1
+        )
+        return base64.b64encode(hashed.digest()).decode('utf-8').rstrip('\n')
+
+    def verify_signature(self, request):  # THIS PART OF CODE FOR TEST ONLY, REMOVE LOGGING AFTER TESTING!!!
         try:
-            print(request.headers.get('Authorization'))
             auth_header = request.headers.get('Authorization')
             if not auth_header or not auth_header.startswith('OAuth '):
                 logger.error("Missing or invalid Authorization header")
                 return False
 
             oauth_params = self._parse_auth_header(auth_header)
+
+            logger.debug(f"OAuth parameters: {oauth_params}")
 
             timestamp = int(oauth_params.get('oauth_timestamp', '0'))
             if abs(time.time() - timestamp) > 300:
@@ -146,8 +213,10 @@ class OAuthSignature:
                 request.method,
                 request.url,
                 oauth_params,
-                dict(request.args)  # Pass query params separately
+                dict(request.args)
             )
+
+            logger.debug(f"Generated base string: {base_string}")
 
             signing_key = self._generate_signing_key(
                 oauth_params.get('oauth_token_secret', '')
@@ -156,10 +225,16 @@ class OAuthSignature:
             expected_signature = self._generate_signature(base_string, signing_key)
             received_signature = oauth_params.get('oauth_signature', '')
 
-            return hmac.compare_digest(
-                expected_signature.encode('utf-8'),
-                received_signature.encode('utf-8')
-            )
+            if not hmac.compare_digest(
+                    expected_signature.encode('utf-8'),
+                    received_signature.encode('utf-8')
+            ):
+                logger.error("Signature mismatch")
+                logger.debug(f"Expected signature: {expected_signature}")
+                logger.debug(f"Received signature: {received_signature}")
+                return False
+
+            return True
 
         except Exception as e:
             logger.error(f"Error verifying OAuth signature: {str(e)}")
@@ -176,58 +251,6 @@ class OAuthSignature:
                 params[key.strip()] = value.strip('"')
 
         return params
-
-    # In OAuthSignature class
-    def _generate_signature_base_string(self, method, url, oauth_params, query_params):
-        """
-        Generate OAuth signature base string according to RFC 5849
-        """
-        parsed_url = urlparse(url)
-        base_url = f"{parsed_url.scheme}://{parsed_url.netloc}{parsed_url.path}"
-
-        all_params = []
-
-        for k, v in oauth_params.items():
-            if k != 'oauth_signature':
-                all_params.append((k, quote(v, safe='')))
-
-        payment_id_values = set()
-
-        for k, v_list in query_params.items():
-            if k.lower() in ['payment_id', 'paymentid']:
-                payment_id_values.update(v_list)
-
-        for value in payment_id_values:
-            all_params.append(('payment_id', quote(value, safe='')))
-            all_params.append(('paymentId', quote(value, safe='')))
-
-        for k, v_list in query_params.items():
-            if k.lower() not in ['payment_id', 'paymentid']:
-                for v in v_list:
-                    all_params.append((k, quote(v, safe='')))
-
-        sorted_params = sorted(all_params, key=lambda x: (x[0], x[1]))
-
-        param_string = '&'.join(f"{k}={v}" for k, v in sorted_params)
-
-        base_string = '&'.join([
-            method.upper(),
-            quote(base_url, safe=''),
-            quote(param_string, safe='')
-        ])
-
-        return base_string
-
-    def _generate_signing_key(self, token_secret=''):
-        return f"{self.consumer_secret}&{token_secret}"
-
-    def _generate_signature(self, base_string, signing_key):
-        hashed = hmac.new(
-            signing_key.encode('utf-8'),
-            base_string.encode('utf-8'),
-            hashlib.sha1
-        )
-        return base64.b64encode(hashed.digest()).decode('utf-8')
 
 
 app = Flask(__name__)
@@ -255,6 +278,19 @@ def require_oauth(f):
         return f(*args, **kwargs)
 
     return decorated
+
+
+def validate_payment_status(status):
+    """Validate that status is an integer and has an expected value"""
+    try:
+        status_int = int(status)
+        if status_int not in [Config.PAYMENT_STATUS['COMPLETED'],
+                              Config.PAYMENT_STATUS['CANCELED']]:
+            raise ValueError(f"Invalid status value: {status_int}")
+        return status_int
+    except ValueError as e:
+        logger.error(f"Invalid status format: {str(e)}")
+        return None
 
 
 @app.route('/callback', methods=['GET', 'POST'])
@@ -285,6 +321,7 @@ def payment_callback():
                 payment_info = {
                     'payment_id': payment_id,
                     'user_id': request.args.get('opensocial_viewer_id'),
+                    'owner_id': request.args.get('opensocial_owner_id'),
                     'status': payment_entry.get('status', 0),
                     'ordered_time': payment_entry.get('orderedTime'),
                     'item_id': payment_items[0].get('itemId'),
@@ -296,6 +333,11 @@ def payment_callback():
                 if not all(payment_info.values()):
                     logger.error(f"Missing required payment fields: {payment_info}")
                     return jsonify({"response_code": "ERROR"}), 400
+
+                # Log if owner_id doesn't match viewer_id
+                if payment_info['owner_id'] != payment_info['user_id']:
+                    logger.warning(
+                        f"owner_id ({payment_info['owner_id']}) does not match viewer_id ({payment_info['user_id']})")
 
                 db.create_payment(payment_info)
                 logger.info(f"Successfully stored payment: {payment_info['payment_id']}")
@@ -312,9 +354,21 @@ def payment_callback():
                               request.args.get('payment_id'))
                 status = request.args.get('status')
                 user_id = request.args.get('opensocial_viewer_id')
+                owner_id = request.args.get('opensocial_owner_id')
+                ordered_time = request.args.get('orderedTime')
 
-                if not all([payment_id, status, user_id]):
+                # Log all received parameters
+                logger.info(f"Received parameters: payment_id={payment_id}, "
+                            f"status={status}, user_id={user_id}, "
+                            f"owner_id={owner_id}, ordered_time={ordered_time}")
+
+                if not all([payment_id, status, user_id, owner_id]):
                     logger.error("Missing required parameters in completion confirmation")
+                    return jsonify({"response_code": "ERROR"}), 400
+
+                # Validate status format and value
+                validated_status = validate_payment_status(status)
+                if validated_status is None:
                     return jsonify({"response_code": "ERROR"}), 400
 
                 payment = db.get_payment(payment_id)
@@ -322,16 +376,16 @@ def payment_callback():
                     logger.error(f"Payment not found: {payment_id}")
                     return jsonify({"response_code": "ERROR"}), 404
 
-                if payment['user_id'] != user_id:
-                    logger.error(f"User ID mismatch: {user_id} != {payment['user_id']}")
+                if payment['user_id'] != user_id or payment['owner_id'] != owner_id:
+                    logger.error(f"User/Owner ID mismatch: viewer={user_id}, "
+                                 f"owner={owner_id}, stored_user={payment['user_id']}, "
+                                 f"stored_owner={payment['owner_id']}")
                     return jsonify({"response_code": "ERROR"}), 401
 
-                new_status = int(status)
-                db.update_payment_status(payment_id, new_status)
+                db.update_payment_status(payment_id, validated_status)
+                logger.info(f"Payment {payment_id} status updated to {validated_status}")
 
-                if new_status == 2:
-                    logger.info(f"Payment {payment_id} successfully validated and completed")
-                    return jsonify({"response_code": "OK"}), 200
+                return jsonify({"response_code": "OK"}), 200
 
             except Exception as e:
                 logger.error(f"Error processing payment completion: {str(e)}")
@@ -380,7 +434,7 @@ def not_found_error(error):
 @app.errorhandler(500)
 def internal_error(error):
     logger.error(f"500 error: {error}")
-    db.session.rollback()
+    # db.session.rollback()
     return jsonify({"response_code": "ERROR"}), 500
 
 
