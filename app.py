@@ -8,7 +8,7 @@ import base64
 from urllib.parse import urlparse, parse_qs, quote
 from functools import wraps
 
-from flask import Flask, request, jsonify, send_from_directory
+from flask import Flask, request, jsonify, send_from_directory, render_template
 from gevent.pywsgi import WSGIServer
 import sqlite3
 
