@@ -181,6 +181,8 @@ class OAuthSignature:
             self._quote_uppercase(base_url),
             self._quote_uppercase(param_string)  # This creates the double-encoding mentioned in docs
         ])
+        
+        print(base_string)
 
         return base_string
 
