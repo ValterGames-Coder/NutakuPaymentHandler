@@ -459,7 +459,10 @@ def internal_error(error):
     logger.error(f"500 error: {error}")
     # db.session.rollback()
     return jsonify({"response_code": "ERROR"}), 500
-
+    
+@app.route('/', methods=['GET'])
+def index():
+    return render_template('index.html')
 
 if __name__ == '__main__':
     # Ensure images folder exists
