@@ -147,6 +147,7 @@ class OAuthSignature:
         """Generate OAuth signature base string according to Nutaku specs"""
         parsed_url = urlparse(url)
         base_url = f"{parsed_url.scheme}://{parsed_url.netloc}{parsed_url.path}"
+        print(base_url)
 
         # 1. Collect OAuth parameters (excluding realm and oauth_signature)
         all_params = []
