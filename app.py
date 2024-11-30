@@ -321,6 +321,7 @@ def payment_callback():
         if request.method == 'POST':
             try:
                 payment_data = request.get_json()
+                print(payment_data)
                 logger.info(f"Payment data received: {payment_data}")
 
                 payment_entry = payment_data.get('entry', {})
