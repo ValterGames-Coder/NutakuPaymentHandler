@@ -462,7 +462,7 @@ def internal_error(error):
     
 @app.route('/', methods=['GET'])
 def index():
-    return 'Hello Bit of Bit'
+    return render_template('index.html')
 
 if __name__ == '__main__':
     # Ensure images folder exists
