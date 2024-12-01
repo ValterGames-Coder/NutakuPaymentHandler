@@ -9,6 +9,7 @@ from urllib.parse import urlparse, parse_qs, quote
 from functools import wraps
 
 from flask import Flask, request, jsonify, send_from_directory, render_template
+from gevent.pywsgi import WSGIServer
 import sqlite3
 
 
@@ -472,3 +473,5 @@ if __name__ == '__main__':
 
     # Start server
     logger.info(f"Starting server on {Config.ip}:{Config.port}")
+    server = WSGIServer((Config.ip, Config.port), app)
+    server.serve_forever()
