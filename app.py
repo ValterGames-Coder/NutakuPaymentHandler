@@ -1,14 +1,14 @@
 import os
 import time
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timezone, timedelta
 import hmac
 import hashlib
 import base64
 from urllib.parse import urlparse, parse_qs, quote, unquote
 from functools import wraps
 
-from flask import Flask, request, jsonify, send_from_directory, render_template
+from flask import Flask, request, jsonify, send_from_directory
 import sqlite3
 
 class Config:
@@ -70,7 +70,7 @@ class Database:
         conn = self.get_db()
         c = conn.cursor()
         
-        now = datetime.utcnow().isoformat()
+        now = datetime.now(timezone.utc).isoformat()
         
         c.execute('''
         INSERT INTO payments (
@@ -126,13 +126,13 @@ class OAuthSignature:
         self.consumer_secret = consumer_secret
 
     def _quote_uppercase(self, s):
+        """URL encode and convert to uppercase as per Nutaku requirements"""
         s = str(s)
         quoted = quote(s, safe='')
         return ''.join(c.upper() if c.isalnum() else c for c in quoted)
 
     def _parse_auth_header(self, auth_header):
-        """Parse OAuth parameters from Authorization header
-        Only strips whitespace and quotes, preserves URL encoding"""
+        """Parse OAuth parameters from Authorization header"""
         params = {}
         if not auth_header or not auth_header.startswith('OAuth '):
             return params
@@ -147,8 +147,9 @@ class OAuthSignature:
         return params
 
     def _get_payment_id_params(self, params):
+        """Handle payment_id parameters first, maintaining their original order"""
         payment_params = []
-        # First handle payment_id
+        # First handle payment_id (case sensitive sorting required by Nutaku)
         if 'payment_id' in params:
             values = params['payment_id']
             if isinstance(values, list):
@@ -169,6 +170,7 @@ class OAuthSignature:
         return payment_params
 
     def _generate_signature_base_string(self, method, url, oauth_params, query_params):
+        """Generate OAuth base string with proper parameter sorting"""
         parsed_url = urlparse(url)
         base_url = f"{parsed_url.scheme}://{parsed_url.netloc}{parsed_url.path}"
         
@@ -240,15 +242,19 @@ class OAuthSignature:
             auth_header = request.headers.get('Authorization')
             logger.debug(f"Auth header: {auth_header}")
             
-            print(auth_header)
-            if not auth_header or not auth_header.startswith('OAuth '):
+            # Check for X-Forwarded-Proto header for HTTPS
+            forwarded_proto = request.headers.get('X-Forwarded-Proto')
+            if forwarded_proto == 'https':
+                logger.debug("Request was forwarded as HTTPS")
+                base_url = request.url.replace('http:', 'https:', 1)
+            else:
+                base_url = request.url
+
+            oauth_params = self._parse_auth_header(auth_header)
+            if not oauth_params:
                 logger.error("Missing or invalid Authorization header")
                 return False
 
-            # Parse OAuth parameters preserving URL encoding
-            oauth_params = self._parse_auth_header(auth_header)
-            logger.debug(f"Parsed OAuth parameters: {oauth_params}")
-            
             # Validate timestamp
             timestamp = int(oauth_params.get('oauth_timestamp', '0'))
             current_time = time.time()
@@ -259,16 +265,15 @@ class OAuthSignature:
                 logger.error(f"OAuth timestamp outside valid window. Current: {current_time}, Received: {timestamp}")
                 return False
 
-            # Generate base string using proper encoding rules
             base_string = self._generate_signature_base_string(
                 request.method,
-                request.url,
+                base_url,
                 oauth_params,
                 dict(request.args)
             )
             logger.debug(f"Generated base string: {base_string}")
 
-            # Generate signing key without URL encoding secrets
+            # Generate signing key
             signing_key = self._generate_signing_key(
                 oauth_params.get('oauth_token_secret', '')
             )
@@ -276,7 +281,6 @@ class OAuthSignature:
 
             # Generate expected signature
             expected_signature = self._generate_signature(base_string, signing_key)
-            
             received_signature = unquote(oauth_params.get('oauth_signature', ''))
             
             logger.debug(f"Expected signature: {expected_signature}")
@@ -296,7 +300,7 @@ class OAuthSignature:
 
         except Exception as e:
             logger.error(f"Error verifying OAuth signature: {str(e)}")
-            logger.exception(e)  # This will log the full stack trace
+            logger.exception(e)
             return False
 
 app = Flask(__name__)
@@ -304,6 +308,17 @@ app.config['UPLOAD_FOLDER'] = Config.UPLOAD_FOLDER
 
 db = Database()
 oauth = OAuthSignature(Config.CONSUMER_KEY, Config.CONSUMER_SECRET)
+
+app.config.update(
+    PROPAGATE_EXCEPTIONS = True  # This will help with debugging
+)
+
+# Add a request logging middleware
+@app.before_request
+def log_request_info():
+    logger.debug('Headers: %s', dict(request.headers))
+    logger.debug('Body: %s', request.get_data())
+    logger.debug('Args: %s', dict(request.args))
 
 # Configure logging
 os.makedirs(app.instance_path, exist_ok=True)
@@ -478,10 +493,6 @@ def internal_error(error):
     logger.error(f"500 error: {error}")
     # db.session.rollback()
     return jsonify({"response_code": "ERROR"}), 500
-    
-@app.route('/', methods=['GET'])
-def index():
-    return render_template('index.html')
 
 if __name__ == '__main__':
     # Ensure images folder exists
