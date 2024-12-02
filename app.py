@@ -37,8 +37,8 @@ class Config:
 
 
 class Database:
-    def __init__(self, db_file=Config.DB_FILE):
-        self.db_file = db_file
+    def __init__(self):
+        self.db_file = os.path.join(app.instance_path, 'payments.db')
         self.init_db()
 
     def get_db(self):
