@@ -282,13 +282,17 @@ db = Database()
 oauth = OAuthSignature(Config.CONSUMER_KEY, Config.CONSUMER_SECRET)
 
 # Configure logging
+os.makedirs(app.instance_path, exist_ok=True)
+
+class Config:
+    LOG_FILE = os.path.join(app.instance_path, 'payment_server.log')
+
 logging.basicConfig(
     filename=Config.LOG_FILE,
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
-
 
 # Request validation decorator
 def require_oauth(f):
