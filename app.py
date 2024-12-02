@@ -42,6 +42,7 @@ class Database:
         self.init_db()
 
     def get_db(self):
+        print(pathlib.Path(self.db_file))
         conn = sqlite3.connect(pathlib.Path(self.db_file))
         conn.row_factory = sqlite3.Row
         return conn
