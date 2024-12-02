@@ -26,7 +26,7 @@ class Config:
     # Paths
     UPLOAD_FOLDER = '/var/www/NutakuPaymentHandler/images'
     DB_FILE = '/var/www/NutakuPaymentHandler/payments.db'
-    LOG_FILE = '/var/www/NutakuPaymentHandler/payment_server.log'
+    LOG_FILE = 'payment_server.log'
 
     # Payment Status Constants
     PAYMENT_STATUS = {
