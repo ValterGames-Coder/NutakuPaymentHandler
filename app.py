@@ -24,9 +24,9 @@ class Config:
     port = 5000
 
     # Paths
-    UPLOAD_FOLDER = 'images'
-    DB_FILE = 'payments.db'
-    LOG_FILE = 'payment_server.log'
+    UPLOAD_FOLDER = '/var/www/NutakuPaymentHandler/images'
+    DB_FILE = '/var/www/NutakuPaymentHandler/payments.db'
+    LOG_FILE = '/var/www/NutakuPaymentHandler/payment_server.log'
 
     # Payment Status Constants
     PAYMENT_STATUS = {
