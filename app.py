@@ -9,7 +9,6 @@ from urllib.parse import urlparse, parse_qs, quote, unquote
 from functools import wraps
 
 from flask import Flask, request, jsonify, send_from_directory
-from gevent.pywsgi import WSGIServer
 import sqlite3
 
 class Config:
@@ -478,6 +477,10 @@ def internal_error(error):
     logger.error(f"500 error: {error}")
     # db.session.rollback()
     return jsonify({"response_code": "ERROR"}), 500
+    
+@app.route('/', methods=['GET'])
+def index():
+    return render_template('index.html')
 
 if __name__ == '__main__':
     # Ensure images folder exists
@@ -488,5 +491,3 @@ if __name__ == '__main__':
     
     # Start server
     logger.info(f"Starting server on {Config.ip}:{Config.port}")
-    server = WSGIServer((Config.ip, Config.port), app)
-    server.serve_forever()
