@@ -240,6 +240,7 @@ class OAuthSignature:
             auth_header = request.headers.get('Authorization')
             logger.debug(f"Auth header: {auth_header}")
             
+            print(auth_header)
             if not auth_header or not auth_header.startswith('OAuth '):
                 logger.error("Missing or invalid Authorization header")
                 return False
