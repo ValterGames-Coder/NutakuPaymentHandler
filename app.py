@@ -7,6 +7,7 @@ import hashlib
 import base64
 from urllib.parse import urlparse, parse_qs, quote
 from functools import wraps
+import pathlib
 
 from flask import Flask, request, jsonify, send_from_directory, render_template
 #from gevent.pywsgi import WSGIServer
@@ -41,7 +42,7 @@ class Database:
         self.init_db()
 
     def get_db(self):
-        conn = sqlite3.connect(self.db_file)
+        conn = sqlite3.connect(pathlib.Path(self.db_file))
         conn.row_factory = sqlite3.Row
         return conn
 
