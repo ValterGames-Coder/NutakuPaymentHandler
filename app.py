@@ -14,8 +14,8 @@ import sqlite3
 class Config:
     # API Settings
     NUTAKU_API_BASE = "https://sbox-osapi.nutaku.com/social_android/rest/"
-    CONSUMER_KEY = os.environ.get('NUTAKU_CONSUMER_KEY', 'YOUR_CONSUMER_KEY')
-    CONSUMER_SECRET = os.environ.get('NUTAKU_CONSUMER_SECRET', 'YOUR_CONSUMER_SECRET')
+    CONSUMER_KEY = os.environ.get('NUTAKU_CONSUMER_KEY', 'j0TXH1blsH66HRrQ')
+    CONSUMER_SECRET = os.environ.get('NUTAKU_CONSUMER_SECRET', 'U1VVMaD@bhLkHgkR?9CI0EVc]R]Kwsn[')
     
     # Server Settings
     ip = "0.0.0.0"
