@@ -5,6 +5,7 @@ from datetime import datetime, timezone, timedelta
 import hmac
 import hashlib
 import base64
+import re
 from urllib.parse import urlparse, parse_qs, quote, unquote
 from functools import wraps
 
@@ -127,9 +128,10 @@ class OAuthSignature:
 
     def _quote_uppercase(self, s):
         """URL encode and convert to uppercase as per Nutaku requirements"""
-        s = str(s)
-        quoted = quote(s, safe='~')  # OAuth 1.0a spec says don't encode ~
-        return quoted.upper()  # Ensure all percent-encoded chars are uppercase
+        s = str(s) if s is not None else ''
+        # Only exclude unreserved chars as per OAuth 1.0a spec
+        quoted = quote(s, safe='-._~')  # RFC 3986 unreserved chars
+        return quoted.upper()
 
     def _parse_auth_header(self, auth_header):
         """Parse OAuth parameters from Authorization header"""
@@ -137,63 +139,32 @@ class OAuthSignature:
         if not auth_header or not auth_header.startswith('OAuth '):
             return params
             
-        parts = auth_header[6:].split(',')
+        # Handle potential line breaks in header
+        header_value = auth_header.replace('\n', '').replace('\r', '')
+        parts = header_value[6:].split(',')
+        
         for part in parts:
             if '=' in part:
                 key, value = part.split('=', 1)
                 key = key.strip()
-                value = unquote(value.strip().strip('"\''))  # Remove quotes and decode
+                # Remove quotes and decode
+                value = unquote(value.strip(' "\''))
                 params[key] = value
         return params
 
-    def _sort_parameters(self, params):
-        """Sort parameters according to Nutaku's specific requirements"""
-        # First, group parameters by name
-        param_groups = {}
-        for k, v in params:
-            if k not in param_groups:
-                param_groups[k] = []
-            param_groups[k].append(v)
-
-        # Sort values within each group
-        for values in param_groups.values():
-            values.sort()
-
-        # Create final sorted list
-        sorted_params = []
-        
-        # Handle OAuth parameters first (excluding realm and signature)
-        oauth_params = [(k, v) for k, v in params if k.startswith('oauth_') 
-                       and k not in ['oauth_signature', 'realm']]
-        oauth_params.sort(key=lambda x: x[0])  # Sort by parameter name
-        sorted_params.extend(oauth_params)
-
-        # Handle paymentId before payment_id (explicit case-sensitive ordering)
-        if 'paymentId' in param_groups:
-            for v in param_groups['paymentId']:
-                sorted_params.append(('paymentId', v))
-        if 'payment_id' in param_groups:
-            for v in param_groups['payment_id']:
-                sorted_params.append(('payment_id', v))
-
-        # Handle remaining parameters
-        remaining_params = [(k, v) for k, v in params 
-                          if not k.startswith('oauth_') 
-                          and k not in ['realm', 'paymentId', 'payment_id']]
-        remaining_params.sort(key=lambda x: (x[0], x[1]))  # Sort by name then value
-        sorted_params.extend(remaining_params)
-
-        return sorted_params
-
     def _generate_signature_base_string(self, method, url, oauth_params, query_params):
         """Generate OAuth base string with proper parameter sorting"""
+        # Parse URL and remove query string if present
         parsed_url = urlparse(url)
         base_url = f"{parsed_url.scheme}://{parsed_url.netloc}{parsed_url.path}"
         
-        # Collect all parameters
+        # Remove trailing question mark if present
+        base_url = base_url.rstrip('?')
+        
+        # Collect parameters
         all_params = []
         
-        # Add OAuth parameters
+        # Add OAuth parameters (excluding realm and signature)
         for k, v in oauth_params.items():
             if k not in ['realm', 'oauth_signature']:
                 all_params.append((k, v))
@@ -201,35 +172,53 @@ class OAuthSignature:
         # Add query parameters
         for k, v_list in query_params.items():
             if isinstance(v_list, list):
-                for v in v_list:
+                # Sort values if multiple exist
+                for v in sorted(v_list):
                     all_params.append((k, v))
             else:
                 all_params.append((k, v_list))
-
-        # Sort parameters according to Nutaku's requirements
-        sorted_params = self._sort_parameters(all_params)
         
-        # Generate parameter string
-        param_string = '&'.join(
-            f"{self._quote_uppercase(k)}={self._quote_uppercase(v)}" 
-            for k, v in sorted_params
-        )
+        # URL encode parameters and create key=value pairs
+        encoded_pairs = []
+        for k, v in all_params:
+            k_enc = self._quote_uppercase(k)
+            v_enc = self._quote_uppercase(v)
+            # Store original and encoded for sorting
+            encoded_pairs.append({
+                'original_key': k,
+                'original_value': v,
+                'encoded_key': k_enc,
+                'encoded_value': v_enc,
+                'pair': f"{k_enc}={v_enc}"
+            })
+        
+        # Sort by encoded string's byte value
+        encoded_pairs.sort(key=lambda x: str.encode(x['pair']))
+        
+        # Join sorted pairs
+        param_string = '&'.join(p['pair'] for p in encoded_pairs)
         
         # Create final base string
-        base_string = '&'.join([
+        components = [
             method.upper(),
             self._quote_uppercase(base_url),
             self._quote_uppercase(param_string)
-        ])
+        ]
+        base_string = '&'.join(components)
         
-        logger.debug(f"Method: {method}")
+        # Debug logging
+        logger.debug("Base String Components:")
+        logger.debug(f"Method: {method.upper()}")
         logger.debug(f"Base URL: {base_url}")
-        logger.debug(f"Sorted parameters: {sorted_params}")
-        logger.debug(f"Generated base string: {base_string}")
+        logger.debug("Parameters (Original -> Encoded):")
+        for p in encoded_pairs:
+            logger.debug(f"{p['original_key']}={p['original_value']} -> {p['pair']}")
+        logger.debug(f"Final Base String: {base_string}")
+        
         return base_string
 
     def _generate_signing_key(self, token_secret=''):
-        """Generate signing key without URL encoding the secrets"""
+        """Generate signing key without URL encoding"""
         return f"{self.consumer_secret}&{token_secret}"
 
     def _generate_signature(self, base_string, signing_key):
@@ -239,13 +228,16 @@ class OAuthSignature:
             base_string.encode('utf-8'),
             hashlib.sha1
         )
-        return base64.b64encode(hashed.digest()).decode('utf-8').rstrip('\n')
+        return base64.b64encode(hashed.digest()).decode('utf-8')
 
     def verify_signature(self, request):
         """Verify the OAuth signature of a request"""
         try:
             logger.debug("Starting signature verification")
+            logger.debug(f"Request URL: {request.url}")
+            logger.debug(f"Request Method: {request.method}")
             
+            # Get and validate Authorization header
             auth_header = request.headers.get('Authorization')
             if not auth_header:
                 logger.error("Missing Authorization header")
@@ -261,6 +253,7 @@ class OAuthSignature:
             oauth_params = self._parse_auth_header(auth_header)
             if not oauth_params:
                 logger.error("Missing or invalid OAuth parameters")
+                logger.error(f"Auth Header: {auth_header}")
                 return False
 
             # Validate timestamp
@@ -268,6 +261,14 @@ class OAuthSignature:
             current_time = time.time()
             if abs(current_time - timestamp) > 300:  # 5 minutes
                 logger.error(f"OAuth timestamp outside valid window")
+                logger.error(f"Current time: {current_time}")
+                logger.error(f"Request timestamp: {timestamp}")
+                logger.error(f"Time difference: {abs(current_time - timestamp)} seconds")
+                return False
+
+            # Ensure HMAC-SHA1 signature method
+            if oauth_params.get('oauth_signature_method') != 'HMAC-SHA1':
+                logger.error(f"Invalid signature method: {oauth_params.get('oauth_signature_method')}")
                 return False
 
             # Generate base string
@@ -287,12 +288,13 @@ class OAuthSignature:
             expected_signature = self._generate_signature(base_string, signing_key)
             received_signature = unquote(oauth_params.get('oauth_signature', ''))
 
+            # Debug logging
             logger.debug(f"Base string: {base_string}")
             logger.debug(f"Signing key: {signing_key}")
             logger.debug(f"Expected signature: {expected_signature}")
             logger.debug(f"Received signature: {received_signature}")
 
-            # Use constant-time comparison
+            # Compare signatures using constant-time comparison
             if not hmac.compare_digest(
                 expected_signature.encode('utf-8'),
                 received_signature.encode('utf-8')
