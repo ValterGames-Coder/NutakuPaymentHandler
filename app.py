@@ -32,7 +32,6 @@ class Config:
         'COMPLETED': 2,
         'CANCELED': 3
     }
-
 class Database:
     def __init__(self):
         self.db_file = os.path.join(app.instance_path, 'payments.db')
@@ -128,9 +127,14 @@ class OAuthSignature:
 
     def _quote_uppercase(self, s):
         """URL encode and convert to uppercase as per Nutaku requirements"""
-        s = str(s) if s is not None else ''
-        # Only exclude unreserved chars as per OAuth 1.0a spec
-        quoted = quote(s, safe='-._~')  # RFC 3986 unreserved chars
+        if s is None:
+            s = ''
+        s = str(s)
+        
+        # OAuth 1.0a spec says only unreserved chars should not be encoded
+        quoted = quote(s, safe='')  # Encode everything for consistency
+        
+        # Convert percent encodings to uppercase
         return quoted.upper()
 
     def _parse_auth_header(self, auth_header):
@@ -139,7 +143,7 @@ class OAuthSignature:
         if not auth_header or not auth_header.startswith('OAuth '):
             return params
             
-        # Handle potential line breaks in header
+        # Remove any whitespace and quotes around the header value
         header_value = auth_header.replace('\n', '').replace('\r', '')
         parts = header_value[6:].split(',')
         
@@ -147,21 +151,20 @@ class OAuthSignature:
             if '=' in part:
                 key, value = part.split('=', 1)
                 key = key.strip()
-                # Remove quotes and decode
+                # Remove surrounding quotes and decode
                 value = unquote(value.strip(' "\''))
                 params[key] = value
+        
         return params
 
-    def _generate_signature_base_string(self, method, url, oauth_params, query_params):
-        """Generate OAuth base string with proper parameter sorting"""
-        # Parse URL and remove query string if present
+    def _generate_base_string(self, method, url, oauth_params, query_params):
+        """Generate OAuth base string according to spec"""
+        # 1. Get base URL (scheme, host, path)
         parsed_url = urlparse(url)
         base_url = f"{parsed_url.scheme}://{parsed_url.netloc}{parsed_url.path}"
+        base_url = base_url.rstrip('?')  # Remove trailing ? if present
         
-        # Remove trailing question mark if present
-        base_url = base_url.rstrip('?')
-        
-        # Collect parameters
+        # 2. Collect all parameters
         all_params = []
         
         # Add OAuth parameters (excluding realm and signature)
@@ -172,54 +175,49 @@ class OAuthSignature:
         # Add query parameters
         for k, v_list in query_params.items():
             if isinstance(v_list, list):
-                # Sort values if multiple exist
+                # Sort multiple values
                 for v in sorted(v_list):
                     all_params.append((k, v))
             else:
                 all_params.append((k, v_list))
         
-        # URL encode parameters and create key=value pairs
+        # 3. First level of encoding for key-value pairs
         encoded_pairs = []
         for k, v in all_params:
             k_enc = self._quote_uppercase(k)
             v_enc = self._quote_uppercase(v)
-            # Store original and encoded for sorting
-            encoded_pairs.append({
-                'original_key': k,
-                'original_value': v,
-                'encoded_key': k_enc,
-                'encoded_value': v_enc,
-                'pair': f"{k_enc}={v_enc}"
-            })
+            encoded_pairs.append((k_enc, v_enc))
         
-        # Sort by encoded string's byte value
-        encoded_pairs.sort(key=lambda x: str.encode(x['pair']))
+        # 4. Sort pairs by their complete encoded form
+        encoded_pairs.sort(key=lambda x: str.encode(f"{x[0]}={x[1]}"))
         
-        # Join sorted pairs
-        param_string = '&'.join(p['pair'] for p in encoded_pairs)
+        # 5. Create parameter string
+        param_string = '&'.join(f"{k}={v}" for k, v in encoded_pairs)
         
-        # Create final base string
+        # 6. Create final base string components
         components = [
-            method.upper(),
+            self._quote_uppercase(method.upper()),
             self._quote_uppercase(base_url),
-            self._quote_uppercase(param_string)
+            self._quote_uppercase(param_string)  # This causes double-encoding of the parameter string
         ]
+        
+        # 7. Join with &
         base_string = '&'.join(components)
         
-        # Debug logging
-        logger.debug("Base String Components:")
+        logger.debug("Base String Generation:")
         logger.debug(f"Method: {method.upper()}")
         logger.debug(f"Base URL: {base_url}")
-        logger.debug("Parameters (Original -> Encoded):")
-        for p in encoded_pairs:
-            logger.debug(f"{p['original_key']}={p['original_value']} -> {p['pair']}")
+        logger.debug(f"Parameter String (before final encoding): {param_string}")
         logger.debug(f"Final Base String: {base_string}")
         
         return base_string
 
     def _generate_signing_key(self, token_secret=''):
-        """Generate signing key without URL encoding"""
-        return f"{self.consumer_secret}&{token_secret}"
+        """Generate signing key - NO URL encoding of secrets"""
+        # For 2-legged OAuth: consumer_secret&
+        # For 3-legged OAuth: consumer_secret&token_secret
+        # NO URL encoding of secrets!
+        return f"{self.consumer_secret}&{token_secret if token_secret else ''}"
 
     def _generate_signature(self, base_string, signing_key):
         """Generate HMAC-SHA1 signature"""
@@ -231,70 +229,68 @@ class OAuthSignature:
         return base64.b64encode(hashed.digest()).decode('utf-8')
 
     def verify_signature(self, request):
-        """Verify the OAuth signature of a request"""
+        """Verify OAuth signature of incoming request"""
         try:
-            logger.debug("Starting signature verification")
+            logger.debug("Starting OAuth signature verification")
             logger.debug(f"Request URL: {request.url}")
             logger.debug(f"Request Method: {request.method}")
             
-            # Get and validate Authorization header
+            # 1. Get Authorization header
             auth_header = request.headers.get('Authorization')
             if not auth_header:
                 logger.error("Missing Authorization header")
                 return False
 
-            # Handle HTTPS forwarding
+            # 2. Handle HTTPS forwarding
             forwarded_proto = request.headers.get('X-Forwarded-Proto')
             base_url = request.url
             if forwarded_proto == 'https':
                 base_url = base_url.replace('http:', 'https:', 1)
 
-            # Parse OAuth parameters
+            # 3. Parse OAuth parameters
             oauth_params = self._parse_auth_header(auth_header)
             if not oauth_params:
-                logger.error("Missing or invalid OAuth parameters")
-                logger.error(f"Auth Header: {auth_header}")
+                logger.error("Invalid Authorization header format")
+                logger.error(f"Auth header: {auth_header}")
                 return False
 
-            # Validate timestamp
-            timestamp = int(oauth_params.get('oauth_timestamp', '0'))
-            current_time = time.time()
-            if abs(current_time - timestamp) > 300:  # 5 minutes
-                logger.error(f"OAuth timestamp outside valid window")
-                logger.error(f"Current time: {current_time}")
-                logger.error(f"Request timestamp: {timestamp}")
-                logger.error(f"Time difference: {abs(current_time - timestamp)} seconds")
-                return False
-
-            # Ensure HMAC-SHA1 signature method
+            # 4. Validate OAuth requirements
             if oauth_params.get('oauth_signature_method') != 'HMAC-SHA1':
                 logger.error(f"Invalid signature method: {oauth_params.get('oauth_signature_method')}")
                 return False
 
-            # Generate base string
-            base_string = self._generate_signature_base_string(
+            # 5. Validate timestamp (5 minute window)
+            timestamp = int(oauth_params.get('oauth_timestamp', '0'))
+            current_time = time.time()
+            if abs(current_time - timestamp) > 300:
+                logger.error(f"Timestamp outside valid window (diff: {abs(current_time - timestamp)}s)")
+                return False
+
+            # 6. Generate base string
+            base_string = self._generate_base_string(
                 request.method,
                 base_url,
                 oauth_params,
                 dict(request.args)
             )
 
-            # Generate signing key
+            # 7. Generate signing key (no URL encoding of secrets)
             signing_key = self._generate_signing_key(
                 oauth_params.get('oauth_token_secret', '')
             )
 
-            # Generate expected signature
+            # 8. Generate signature
             expected_signature = self._generate_signature(base_string, signing_key)
             received_signature = unquote(oauth_params.get('oauth_signature', ''))
 
-            # Debug logging
+            # Detailed logging for debugging
+            logger.debug("Signature Verification Details:")
             logger.debug(f"Base string: {base_string}")
             logger.debug(f"Signing key: {signing_key}")
             logger.debug(f"Expected signature: {expected_signature}")
             logger.debug(f"Received signature: {received_signature}")
 
-            # Compare signatures using constant-time comparison
+            # 9. Compare signatures using constant-time comparison
             if not hmac.compare_digest(
                 expected_signature.encode('utf-8'),
                 received_signature.encode('utf-8')
@@ -307,7 +303,7 @@ class OAuthSignature:
             return True
 
         except Exception as e:
-            logger.error(f"Error verifying OAuth signature: {str(e)}")
+            logger.error(f"Error in OAuth validation: {str(e)}")
             logger.exception(e)
             return False
 
