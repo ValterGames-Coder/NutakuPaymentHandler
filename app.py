@@ -24,7 +24,7 @@ class Config:
     # Paths
     UPLOAD_FOLDER = 'images'
     DB_FILE = 'payments.db'
-    LOG_FILE = 'payment_server.log'
+    LOG_FILE = os.path.join(app.instance_path, 'payment_server.log')
 
     # Payment Status Constants
     PAYMENT_STATUS = {
