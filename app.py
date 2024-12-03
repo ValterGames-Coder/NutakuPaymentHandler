@@ -231,9 +231,9 @@ class OAuthSignature:
     def verify_signature(self, request):
         """Verify OAuth signature of incoming request"""
         try:
-            logger.debug("Starting OAuth signature verification")
-            logger.debug(f"Request URL: {request.url}")
-            logger.debug(f"Request Method: {request.method}")
+            logger.error("Starting OAuth signature verification")
+            logger.error(f"Request URL: {request.url}")
+            logger.error(f"Request Method: {request.method}")
             
             # 1. Get Authorization header
             auth_header = request.headers.get('Authorization')
@@ -284,11 +284,11 @@ class OAuthSignature:
             received_signature = unquote(oauth_params.get('oauth_signature', ''))
 
             # Detailed logging for debugging
-            logger.debug("Signature Verification Details:")
-            logger.debug(f"Base string: {base_string}")
-            logger.debug(f"Signing key: {signing_key}")
-            logger.debug(f"Expected signature: {expected_signature}")
-            logger.debug(f"Received signature: {received_signature}")
+            logger.error("Signature Verification Details:")
+            logger.error(f"Base string: {base_string}")
+            logger.error(f"Signing key: {signing_key}")
+            logger.error(f"Expected signature: {expected_signature}")
+            logger.error(f"Received signature: {received_signature}")
 
             # 9. Compare signatures using constant-time comparison
             if not hmac.compare_digest(
