@@ -24,7 +24,7 @@ class Config:
     # Paths
     UPLOAD_FOLDER = 'images'
     DB_FILE = 'payments.db'
-    LOG_FILE = os.path.join(app.instance_path, 'payment_server.log')
+    LOG_FILE = 'payment_server.log'
 
     # Payment Status Constants
     PAYMENT_STATUS = {
@@ -327,6 +327,9 @@ def log_request_info():
     logger.debug('Args: %s', dict(request.args))
 
 # Configure logging
+class Config:
+    LOG_FILE = os.path.join(app.instance_path, 'payment_server.log')
+
 os.makedirs(app.instance_path, exist_ok=True)
 
 logging.basicConfig(
