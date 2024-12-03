@@ -128,8 +128,8 @@ class OAuthSignature:
     def _quote_uppercase(self, s):
         """URL encode and convert to uppercase as per Nutaku requirements"""
         s = str(s)
-        quoted = quote(s, safe='')
-        return ''.join(c.upper() if c.isalnum() else c for c in quoted)
+        quoted = quote(s, safe='~')  # OAuth 1.0a spec says don't encode ~
+        return quoted.upper()  # Ensure all percent-encoded chars are uppercase
 
     def _parse_auth_header(self, auth_header):
         """Parse OAuth parameters from Authorization header"""
@@ -142,73 +142,77 @@ class OAuthSignature:
             if '=' in part:
                 key, value = part.split('=', 1)
                 key = key.strip()
-                value = value.strip().strip('"')
+                value = unquote(value.strip().strip('"\''))  # Remove quotes and decode
                 params[key] = value
         return params
 
-    def _get_payment_id_params(self, params):
-        """Handle payment_id parameters first, maintaining their original order"""
-        payment_params = []
-        # First handle payment_id (case sensitive sorting required by Nutaku)
-        if 'payment_id' in params:
-            values = params['payment_id']
-            if isinstance(values, list):
-                for v in values:
-                    payment_params.append(('payment_id', v))
-            else:
-                payment_params.append(('payment_id', values))
-                
-        # Then handle paymentId
-        if 'paymentId' in params:
-            values = params['paymentId']
-            if isinstance(values, list):
-                for v in values:
-                    payment_params.append(('paymentId', v))
-            else:
-                payment_params.append(('paymentId', values))
-                
-        return payment_params
+    def _sort_parameters(self, params):
+        """Sort parameters according to Nutaku's specific requirements"""
+        # First, group parameters by name
+        param_groups = {}
+        for k, v in params:
+            if k not in param_groups:
+                param_groups[k] = []
+            param_groups[k].append(v)
+
+        # Sort values within each group
+        for values in param_groups.values():
+            values.sort()
+
+        # Create final sorted list
+        sorted_params = []
+        
+        # Handle OAuth parameters first (excluding realm and signature)
+        oauth_params = [(k, v) for k, v in params if k.startswith('oauth_') 
+                       and k not in ['oauth_signature', 'realm']]
+        oauth_params.sort(key=lambda x: x[0])  # Sort by parameter name
+        sorted_params.extend(oauth_params)
+
+        # Handle paymentId before payment_id (explicit case-sensitive ordering)
+        if 'paymentId' in param_groups:
+            for v in param_groups['paymentId']:
+                sorted_params.append(('paymentId', v))
+        if 'payment_id' in param_groups:
+            for v in param_groups['payment_id']:
+                sorted_params.append(('payment_id', v))
+
+        # Handle remaining parameters
+        remaining_params = [(k, v) for k, v in params 
+                          if not k.startswith('oauth_') 
+                          and k not in ['realm', 'paymentId', 'payment_id']]
+        remaining_params.sort(key=lambda x: (x[0], x[1]))  # Sort by name then value
+        sorted_params.extend(remaining_params)
+
+        return sorted_params
 
     def _generate_signature_base_string(self, method, url, oauth_params, query_params):
         """Generate OAuth base string with proper parameter sorting"""
         parsed_url = urlparse(url)
         base_url = f"{parsed_url.scheme}://{parsed_url.netloc}{parsed_url.path}"
         
-        logger.debug(f"Method: {method}")
-        logger.debug(f"Base URL: {base_url}")
-        logger.debug(f"OAuth params: {oauth_params}")
-        logger.debug(f"Query params: {query_params}")
-
-        # 1. Collect OAuth parameters (excluding realm and oauth_signature)
+        # Collect all parameters
         all_params = []
+        
+        # Add OAuth parameters
         for k, v in oauth_params.items():
             if k not in ['realm', 'oauth_signature']:
                 all_params.append((k, v))
         
-        # 2. Add payment_id parameters first, maintaining their original order
-        payment_id_params = self._get_payment_id_params(query_params)
-        all_params.extend(payment_id_params)
-        
-        # 3. Add remaining query parameters, sorted case-sensitively
-        other_params = []
+        # Add query parameters
         for k, v_list in query_params.items():
-            if k not in ['payment_id', 'paymentId']:
-                if isinstance(v_list, list):
-                    for v in v_list:
-                        other_params.append((k, v))
-                else:
-                    other_params.append((k, v_list))
-        
-        # Sort remaining parameters case-sensitively by name then value
-        other_params.sort(key=lambda x: (str(x[0]), str(x[1])))
-        all_params.extend(other_params)
-        
-        logger.debug(f"All parameters before encoding: {all_params}")
+            if isinstance(v_list, list):
+                for v in v_list:
+                    all_params.append((k, v))
+            else:
+                all_params.append((k, v_list))
 
-        # Generate parameter string with proper encoding
+        # Sort parameters according to Nutaku's requirements
+        sorted_params = self._sort_parameters(all_params)
+        
+        # Generate parameter string
         param_string = '&'.join(
-            f"{self._quote_uppercase(k)}={self._quote_uppercase(str(v))}" 
-            for k, v in all_params
+            f"{self._quote_uppercase(k)}={self._quote_uppercase(v)}" 
+            for k, v in sorted_params
         )
         
         # Create final base string
@@ -218,12 +222,15 @@ class OAuthSignature:
             self._quote_uppercase(param_string)
         ])
         
+        logger.debug(f"Method: {method}")
+        logger.debug(f"Base URL: {base_url}")
+        logger.debug(f"Sorted parameters: {sorted_params}")
         logger.debug(f"Generated base string: {base_string}")
         return base_string
 
     def _generate_signing_key(self, token_secret=''):
         """Generate signing key without URL encoding the secrets"""
-        return f"{self.consumer_secret}&{token_secret if token_secret else ''}"
+        return f"{self.consumer_secret}&{token_secret}"
 
     def _generate_signature(self, base_string, signing_key):
         """Generate HMAC-SHA1 signature"""
@@ -240,52 +247,52 @@ class OAuthSignature:
             logger.debug("Starting signature verification")
             
             auth_header = request.headers.get('Authorization')
-            logger.debug(f"Auth header: {auth_header}")
-            
-            # Check for X-Forwarded-Proto header for HTTPS
-            forwarded_proto = request.headers.get('X-Forwarded-Proto')
-            if forwarded_proto == 'https':
-                logger.debug("Request was forwarded as HTTPS")
-                base_url = request.url.replace('http:', 'https:', 1)
-            else:
-                base_url = request.url
+            if not auth_header:
+                logger.error("Missing Authorization header")
+                return False
 
+            # Handle HTTPS forwarding
+            forwarded_proto = request.headers.get('X-Forwarded-Proto')
+            base_url = request.url
+            if forwarded_proto == 'https':
+                base_url = base_url.replace('http:', 'https:', 1)
+
+            # Parse OAuth parameters
             oauth_params = self._parse_auth_header(auth_header)
             if not oauth_params:
-                logger.error("Missing or invalid Authorization header")
+                logger.error("Missing or invalid OAuth parameters")
                 return False
 
             # Validate timestamp
             timestamp = int(oauth_params.get('oauth_timestamp', '0'))
             current_time = time.time()
-            time_diff = abs(current_time - timestamp)
-            logger.debug(f"Timestamp difference: {time_diff} seconds")
-            
-            if time_diff > 300:  # 5 minutes
-                logger.error(f"OAuth timestamp outside valid window. Current: {current_time}, Received: {timestamp}")
+            if abs(current_time - timestamp) > 300:  # 5 minutes
+                logger.error(f"OAuth timestamp outside valid window")
                 return False
 
+            # Generate base string
             base_string = self._generate_signature_base_string(
                 request.method,
                 base_url,
                 oauth_params,
                 dict(request.args)
             )
-            logger.debug(f"Generated base string: {base_string}")
 
             # Generate signing key
             signing_key = self._generate_signing_key(
                 oauth_params.get('oauth_token_secret', '')
             )
-            logger.debug("Generated signing key")
 
             # Generate expected signature
             expected_signature = self._generate_signature(base_string, signing_key)
             received_signature = unquote(oauth_params.get('oauth_signature', ''))
-            
-            logger.debug(f"Expected signature: {expected_signature}")
-            logger.debug(f"Received signature (decoded): {received_signature}")
 
+            logger.debug(f"Base string: {base_string}")
+            logger.debug(f"Signing key: {signing_key}")
+            logger.debug(f"Expected signature: {expected_signature}")
+            logger.debug(f"Received signature: {received_signature}")
+
+            # Use constant-time comparison
             if not hmac.compare_digest(
                 expected_signature.encode('utf-8'),
                 received_signature.encode('utf-8')
@@ -294,8 +301,7 @@ class OAuthSignature:
                 logger.error(f"Expected: {expected_signature}")
                 logger.error(f"Received (decoded): {received_signature}")
                 return False
-                
-            logger.debug("Signature verification successful")
+
             return True
 
         except Exception as e:
@@ -322,9 +328,6 @@ def log_request_info():
 
 # Configure logging
 os.makedirs(app.instance_path, exist_ok=True)
-
-class Config:
-    LOG_FILE = os.path.join(app.instance_path, 'payment_server.log')
 
 logging.basicConfig(
     filename=Config.LOG_FILE,
