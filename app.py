@@ -16,6 +16,7 @@ class Config:
     def __init__(self):
         self.LOG_FILE = os.path.join(app.instance_path, 'payment_server.log')
     # API Settings
+    LOG_FILE = ''
     NUTAKU_API_BASE = "https://sbox-osapi.nutaku.com/social_android/rest/"
     CONSUMER_KEY = os.environ.get('NUTAKU_CONSUMER_KEY', 'j0TXH1blsH66HRrQ')
     CONSUMER_SECRET = os.environ.get('NUTAKU_CONSUMER_SECRET', 'U1VVMaD@bhLkHgkR?9CI0EVc]R]Kwsn[')
