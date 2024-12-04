@@ -13,8 +13,8 @@ from flask import Flask, render_template, request, jsonify, send_from_directory
 import sqlite3
 
 class Config:
-    def __init__(self):
-        LOG_FILE = os.path.join(app.instance_path, 'payment_server.log')
+    
+    LOG_FILE = os.path.join(app.instance_path, 'payment_server.log')
     # API Settings
     NUTAKU_API_BASE = "https://sbox-osapi.nutaku.com/social_android/rest/"
     CONSUMER_KEY = os.environ.get('NUTAKU_CONSUMER_KEY', 'j0TXH1blsH66HRrQ')
