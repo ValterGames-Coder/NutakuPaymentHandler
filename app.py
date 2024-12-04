@@ -13,10 +13,7 @@ from flask import Flask, render_template, request, jsonify, send_from_directory
 import sqlite3
 
 class Config:
-    def __init__(self):
-        self.LOG_FILE = os.path.join(app.instance_path, 'payment_server.log')
     # API Settings
-    LOG_FILE = ''
     NUTAKU_API_BASE = "https://sbox-osapi.nutaku.com/social_android/rest/"
     CONSUMER_KEY = os.environ.get('NUTAKU_CONSUMER_KEY', 'j0TXH1blsH66HRrQ')
     CONSUMER_SECRET = os.environ.get('NUTAKU_CONSUMER_SECRET', 'U1VVMaD@bhLkHgkR?9CI0EVc]R]Kwsn[')
@@ -327,6 +324,9 @@ def log_request_info():
     logger.debug('Args: %s', dict(request.args))
 
 # Configure logging
+class Config:
+    LOG_FILE = os.path.join(app.instance_path, 'payment_server.log')
+
 os.makedirs(app.instance_path, exist_ok=True)
 logging.basicConfig(
     filename=Config.LOG_FILE,
