@@ -208,11 +208,11 @@ class OAuthSignature:
         # 7. Join with &
         base_string = '&'.join(components)
         
-        logger.debug("Base String Generation:")
-        logger.debug(f"Method: {method.upper()}")
-        logger.debug(f"Base URL: {base_url}")
-        logger.debug(f"Parameter String (double-encoded): {param_string}")
-        logger.debug(f"Final Base String: {base_string}")
+        logger.error("Base String Generation:")
+        logger.error(f"Method: {method.upper()}")
+        logger.error(f"Base URL: {base_url}")
+        logger.error(f"Parameter String (double-encoded): {param_string}")
+        logger.error(f"Final Base String: {base_string}")
         
         return base_string
 
