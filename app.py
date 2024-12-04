@@ -9,29 +9,32 @@ import re
 from urllib.parse import urlparse, parse_qs, quote, unquote
 from functools import wraps
 
-from flask import Flask, request, jsonify, send_from_directory
+from flask import Flask, render_template, request, jsonify, send_from_directory
 import sqlite3
 
 class Config:
+    def __init__(self):
+        LOG_FILE = os.path.join(app.instance_path, 'payment_server.log')
     # API Settings
     NUTAKU_API_BASE = "https://sbox-osapi.nutaku.com/social_android/rest/"
     CONSUMER_KEY = os.environ.get('NUTAKU_CONSUMER_KEY', 'j0TXH1blsH66HRrQ')
     CONSUMER_SECRET = os.environ.get('NUTAKU_CONSUMER_SECRET', 'U1VVMaD@bhLkHgkR?9CI0EVc]R]Kwsn[')
-    
+        
     # Server Settings
     ip = "0.0.0.0"
     port = 5000
-    
+        
     # Paths
     UPLOAD_FOLDER = 'images'
     DB_FILE = 'payments.db'
-    LOG_FILE = 'payment_server.log'
+        
 
     # Payment Status Constants
     PAYMENT_STATUS = {
         'COMPLETED': 2,
         'CANCELED': 3
     }
+
 class Database:
     def __init__(self):
         self.db_file = os.path.join(app.instance_path, 'payments.db')
@@ -162,7 +165,7 @@ class OAuthSignature:
         # 1. Get base URL (scheme, host, path)
         parsed_url = urlparse(url)
         base_url = f"{parsed_url.scheme}://{parsed_url.netloc}{parsed_url.path}"
-        base_url = base_url.rstrip('?')  # Remove trailing ? if present
+        base_url = self._quote_uppercase(base_url.rstrip('?'))  # URL-encode base URL
         
         # 2. Collect all parameters
         all_params = []
@@ -192,13 +195,13 @@ class OAuthSignature:
         encoded_pairs.sort(key=lambda x: str.encode(f"{x[0]}={x[1]}"))
         
         # 5. Create parameter string
-        param_string = '&'.join(f"{k}={v}" for k, v in encoded_pairs)
+        param_string = self._quote_uppercase('&'.join(f"{k}={v}" for k, v in encoded_pairs))
         
         # 6. Create final base string components
         components = [
             self._quote_uppercase(method.upper()),
             self._quote_uppercase(base_url),
-            self._quote_uppercase(param_string)  # This causes double-encoding of the parameter string
+            param_string  # This is now double-encoded
         ]
         
         # 7. Join with &
@@ -207,17 +210,15 @@ class OAuthSignature:
         logger.debug("Base String Generation:")
         logger.debug(f"Method: {method.upper()}")
         logger.debug(f"Base URL: {base_url}")
-        logger.debug(f"Parameter String (before final encoding): {param_string}")
+        logger.debug(f"Parameter String (double-encoded): {param_string}")
         logger.debug(f"Final Base String: {base_string}")
         
         return base_string
 
     def _generate_signing_key(self, token_secret=''):
-        """Generate signing key - NO URL encoding of secrets"""
-        # For 2-legged OAuth: consumer_secret&
-        # For 3-legged OAuth: consumer_secret&token_secret
-        # NO URL encoding of secrets!
-        return f"{self.consumer_secret}&{token_secret if token_secret else ''}"
+        """Generate signing key"""
+        # URL-encode the consumer secret and token secret individually
+        return f"{self._quote_uppercase(self.consumer_secret)}&{self._quote_uppercase(token_secret) if token_secret else ''}"
 
     def _generate_signature(self, base_string, signing_key):
         """Generate HMAC-SHA1 signature"""
@@ -231,9 +232,9 @@ class OAuthSignature:
     def verify_signature(self, request):
         """Verify OAuth signature of incoming request"""
         try:
-            logger.error("Starting OAuth signature verification")
-            logger.error(f"Request URL: {request.url}")
-            logger.error(f"Request Method: {request.method}")
+            logger.debug("Starting OAuth signature verification")
+            logger.debug(f"Request URL: {request.url}")
+            logger.debug(f"Request Method: {request.method}")
             
             # 1. Get Authorization header
             auth_header = request.headers.get('Authorization')
@@ -274,7 +275,7 @@ class OAuthSignature:
                 dict(request.args)
             )
 
-            # 7. Generate signing key (no URL encoding of secrets)
+            # 7. Generate signing key
             signing_key = self._generate_signing_key(
                 oauth_params.get('oauth_token_secret', '')
             )
@@ -284,11 +285,11 @@ class OAuthSignature:
             received_signature = unquote(oauth_params.get('oauth_signature', ''))
 
             # Detailed logging for debugging
-            logger.error("Signature Verification Details:")
-            logger.error(f"Base string: {base_string}")
-            logger.error(f"Signing key: {signing_key}")
-            logger.error(f"Expected signature: {expected_signature}")
-            logger.error(f"Received signature: {received_signature}")
+            logger.debug("Signature Verification Details:")
+            logger.debug(f"Generated base string: {base_string}")
+            logger.debug(f"Generated signing key: {signing_key}")
+            logger.debug(f"Generated signature: {expected_signature}")
+            logger.debug(f"Received signature: {received_signature}")
 
             # 9. Compare signatures using constant-time comparison
             if not hmac.compare_digest(
@@ -325,11 +326,7 @@ def log_request_info():
     logger.debug('Args: %s', dict(request.args))
 
 # Configure logging
-class Config:
-    LOG_FILE = os.path.join(app.instance_path, 'payment_server.log')
-
 os.makedirs(app.instance_path, exist_ok=True)
-
 logging.basicConfig(
     filename=Config.LOG_FILE,
     level=logging.INFO,
@@ -486,6 +483,10 @@ def serve_image(filename):
         logger.error(f"Error serving image {filename}: {str(e)}")
         return "Error serving image", 500
 
+@app.route('/', methods=['GET'])
+def home():
+    return render_template('index.html')
+
 # Error handlers
 @app.errorhandler(404)
 def not_found_error(error):
@@ -499,6 +500,7 @@ def internal_error(error):
     return jsonify({"response_code": "ERROR"}), 500
 
 if __name__ == '__main__':
+    Config.__init__()
     # Ensure images folder exists
     os.makedirs(Config.UPLOAD_FOLDER, exist_ok=True)
     
