@@ -333,7 +333,7 @@ def log_request_info():
 # Configure logging
 os.makedirs(app.instance_path, exist_ok=True)
 logging.basicConfig(
-    filename=Config.LOG_FILE,
+    filename=os.path.join(app.instance_path, 'payment_server.log'),
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
