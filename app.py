@@ -190,7 +190,12 @@ class OAuthSignature:
 
     def _quote_uppercase(self, s):
         """
-        URL encode maintaining UPPERCASE encoding as specified in documentation.
+        URL encode maintaining UPPERCASE encoding as specified in documentation:
+        "URL-encoded characters should be done as uppercase (i.e. the encoded slash 
+        character must be %2F, not %2f). There are some functions/methods in certain 
+        languages that result in lowercase encoding - you need to adjust the output 
+        of those functions, or use different functions."
+        
         This is CRITICAL for signature matching.
         """
         if s is None:
@@ -228,27 +233,50 @@ class OAuthSignature:
         logger.debug(f"URL Encoded (uppercase): {s} -> {final}")
         return final
 
+    def _get_body_params(self, request):
+        """Get parameters from request body if applicable"""
+        if (request.method == 'POST' and 
+            request.headers.get('Content-Type', '').startswith('application/x-www-form-urlencoded')):
+            try:
+                logger.debug("Processing form-encoded POST body parameters")
+                return dict(request.form)
+            except Exception as e:
+                logger.error(f"Error processing form data: {e}")
+                return {}
+        return {}
+
     def _generate_base_string(self, method, url, oauth_params, query_params):
-        """Generate OAuth base string according to spec
-        Important: Include ALL parameters except oauth_signature and oauth_token_secret
+        """
+        Generate OAuth base string according to OAuth 1.0a spec and Nutaku requirements.
+        
+        As per documentation:
+        - Must include ALL parameters except oauth_signature and oauth_token_secret
+        - Must include all GET/POST parameters from URL and body (if form-encoded POST)
+        - Must maintain case-sensitive ASCII sorting
+        - All components must be properly URL encoded (uppercase)
+        - URL must not end with just a question mark (this will cause OAuth to misbehave)
         """
         # 1. Get base URL (scheme, host, path)
         parsed_url = urlparse(url)
         base_url = f"{parsed_url.scheme}://{parsed_url.netloc}{parsed_url.path}"
-        base_url = base_url.rstrip('?')  # Remove trailing question mark if present
         
+        # CRITICAL: Check for and handle URL ending with bare question mark
+        if base_url.endswith('?'):
+            logger.warning("URL ends with bare question mark - this will cause OAuth validation to fail")
+            base_url = base_url.rstrip('?')
+            
         logger.debug(f"Starting base string generation with URL: {base_url}")
         
-        # 2. Collect all parameters (CRITICAL: include ALL parameters except oauth_signature and oauth_token_secret)
+        # 2. Collect all parameters
         all_params = []
         
-        # Add ALL OAuth parameters except excluded ones
+        # Add OAuth parameters (except excluded ones)
         for k, v in oauth_params.items():
             if k not in ['realm', 'oauth_signature', 'oauth_token_secret']:
                 all_params.append((k, v))
                 logger.debug(f"Added OAuth param: {k}={v}")
         
-        # Add ALL query parameters - VERY IMPORTANT
+        # Add query parameters
         for k, v in query_params.items():
             if isinstance(v, list):
                 for single_v in sorted(v):
@@ -267,11 +295,15 @@ class OAuthSignature:
         
         # 4. Sort parameters by raw ASCII value (case-sensitive)
         # CRITICAL: payment_id MUST come after paymentId due to ASCII sorting
-        # This is done by using the raw string values for sorting
-        encoded_pairs.sort(key=lambda x: x[0])  # First sort by key only
+        # Docs: "sorting must be case-sensitive following raw ASCII char numerical id/value"
+        encoded_pairs.sort(key=lambda x: x[0])  # First sort keys by ASCII value
         
-        # Then stable sort by full pair to handle duplicate keys while preserving first sort
-        encoded_pairs.sort(key=lambda x: x[0] + '=' + x[1], reverse=False)
+        # For same keys, sort by values
+        # Using stable sort to maintain relative ordering of different keys
+        encoded_pairs = sorted(
+            encoded_pairs,
+            key=lambda x: (x[0], x[1])  # Sort by key then value, using ASCII ordering
+        )
         
         # 5. Create parameter string - join with & and =
         param_string = '&'.join(f"{k}={v}" for k, v in encoded_pairs)
@@ -295,30 +327,45 @@ class OAuthSignature:
 
     def _generate_signing_key(self, token_secret='', method=''):
         """
-        Generate signing key EXACTLY as per peer's comment:
-        - "first GET request it simply consists of your secret + &"
-        - "second oauth_token_secret comes and the key will already be secret + & + oauth_token_secret"
+        Generate signing key according to OAuth 1.0a spec and Nutaku requirements:
+        
+        2-legged requests (first requests):
+        - Key is consumer_secret + "&"
+        
+        3-legged requests (with oauth_token):
+        - Key is consumer_secret + "&" + oauth_token_secret
+        
+        As per peer: "first GET request it simply consists of your secret + &"
+        and "second oauth_token_secret comes and the key will already be secret + & + oauth_token_secret"
         """
         # URL encode the consumer secret (maintaining uppercase encoding)
         encoded_secret = self._quote_uppercase(self.consumer_secret)
         
-        # For all first requests (POST/GET) - secret + &
+        # For 2-legged requests or first request in flow: secret + &
         key = encoded_secret + '&'
         
-        # For second GET only (payment completion) - append token_secret
+        # For 3-legged requests or second request with token: append token_secret
         if token_secret:
             # Important: URL encode the token_secret before appending
             encoded_token_secret = self._quote_uppercase(token_secret)
             key += encoded_token_secret
-            logger.debug("Using key format with token_secret")
+            logger.debug("Using 3-legged auth signing key (with token_secret)")
         else:
-            logger.debug("Using key format without token_secret")
+            logger.debug("Using 2-legged auth signing key (without token_secret)")
         
         logger.debug(f"Generated signing key: {key}")
         return key
 
     def verify_signature(self, request):
-        """Verify OAuth signature of incoming request"""
+        """
+        Verify OAuth signature of incoming request.
+        
+        Note: If using Apache with mod_security or PHP with CGI, the Authorization 
+        header may be stripped. You'll need to either:
+        1. Remove mod_security if not needed
+        2. Add RewriteRule in .htaccess to preserve the header
+        3. Get the header from a different source (e.g. HTTP_AUTHORIZATION)
+        """
         try:
             logger.debug("Starting OAuth signature verification")
             logger.debug(f"Request URL: {request.url}")
