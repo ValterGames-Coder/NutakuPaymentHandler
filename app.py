@@ -197,26 +197,30 @@ class OAuthSignature:
             s = ''
         s = str(s)
         
-        # 1. Encode EVERYTHING (no safe chars)
-        quoted = quote(s, safe='')
-        
-        # 2. Convert all percent encodings to uppercase
-        # Common ones to check: %2F (slash), %3A (colon), %3D (equals), %26 (ampersand)
-        uppercase_quoted = re.sub(
+        # 1. First convert existing percent-encoded sequences to uppercase
+        s = re.sub(
             r'%[0-9a-fA-F]{2}',
             lambda m: m.group(0).upper(),
-            quoted
+            s
         )
         
-        # 3. Verify critical encodings are uppercase
-        critical_encodings = ['%2F', '%3A', '%3D', '%26']
-        for encoding in critical_encodings:
-            if encoding.lower() in uppercase_quoted:
-                logger.error(f"Found lowercase encoding: {encoding.lower()}")
-                raise ValueError(f"Critical encoding must be uppercase: {encoding}")
-                
-        logger.debug(f"Encoded value: {s} -> {uppercase_quoted}")
-        return uppercase_quoted
+        # 2. Encode remaining characters, being careful with already encoded ones
+        result = []
+        i = 0
+        while i < len(s):
+            if s[i] == '%' and i + 2 < len(s) and all(c in '0123456789ABCDEFabcdef' for c in s[i+1:i+3]):
+                # This is already a percent-encoded sequence, keep it
+                result.append(s[i:i+3].upper())
+                i += 3
+            else:
+                # Encode this character
+                enc = quote(s[i], safe='')
+                result.append(enc.upper())
+                i += 1
+        
+        final = ''.join(result)
+        logger.debug(f"Encoded value: {s} -> {final}")
+        return final
 
     def _generate_base_string(self, method, url, oauth_params, query_params):
         """Generate OAuth base string according to spec"""
@@ -234,18 +238,17 @@ class OAuthSignature:
                 all_params.append((k, v))
                 logger.debug(f"Added OAuth param: {k}={v}")
         
-        # Add ALL query parameters - VERY IMPORTANT per peer's comment
+        # Add ALL query parameters - VERY IMPORTANT
         for k, v in query_params.items():
             if isinstance(v, list):
-                # Sort multiple values to ensure consistent ordering
                 for single_v in sorted(v):
                     all_params.append((k, str(single_v)))
-                    logger.debug(f"Added list query param: {k}={single_v}")
+                    logger.debug(f"Added query param: {k}={single_v}")
             else:
                 all_params.append((k, str(v)))
                 logger.debug(f"Added query param: {k}={v}")
-        
-        # 3. URL-encode all keys and values 
+                
+        # 3. URL-encode all keys and values
         encoded_pairs = []
         for k, v in all_params:
             k_enc = self._quote_uppercase(k)
@@ -254,16 +257,17 @@ class OAuthSignature:
         
         # 4. Sort parameters by raw ASCII value (case-sensitive)
         # This ensures payment_id comes after paymentId as required
-        encoded_pairs.sort(key=lambda x: x[0] + '=' + x[1])
+        encoded_pairs.sort(key=lambda x: (x[0], x[1]))
+        # encoded_pairs.sort(key=lambda x: x[0] + '=' + x[1])
         
         # 5. Create parameter string - join with & and =
         param_string = '&'.join(f"{k}={v}" for k, v in encoded_pairs)
         
         # 6. URL-encode the three main components and join with &
         components = [
-            self._quote_uppercase(method.upper()),
-            self._quote_uppercase(base_url),
-            self._quote_uppercase(param_string)  # Double-encoding occurs here
+            self._quote_uppercase(method.upper()),  # Method always uppercase
+            self._quote_uppercase(base_url),        # URL encoded
+            self._quote_uppercase(param_string)     # Parameters double-encoded here
         ]
         
         base_string = '&'.join(components)
@@ -278,24 +282,25 @@ class OAuthSignature:
 
     def _generate_signing_key(self, token_secret='', method=''):
         """
-        Generate signing key based on request type:
-        - First GET/POST: secret + &
-        - Second GET (payment completion): secret + & + oauth_token_secret
+        Generate signing key EXACTLY as per peer's comment:
+        - "first GET request it simply consists of your secret + &"
+        - "second oauth_token_secret comes and the key will already be secret + & + oauth_token_secret"
         """
-        # First, URL-encode the consumer secret (maintaining uppercase encoding)
+        # URL encode the consumer secret (maintaining uppercase encoding)
         encoded_secret = self._quote_uppercase(self.consumer_secret)
         
-        # Always start with encoded_secret + &
+        # First GET/POST always starts with "secret + &"
         key = encoded_secret + '&'
         
-        # For the second GET request (payment completion), append token_secret
+        # For second GET (payment completion), append token_secret
         if method == 'GET' and token_secret:
+            # Add token_secret for second GET
             key += self._quote_uppercase(token_secret)
-            logger.debug("Using payment completion key (secret & token_secret)")
+            logger.debug("Using second GET key format (with token_secret)")
         else:
-            logger.debug("Using first request key (secret &)")
+            logger.debug("Using first GET/POST key format (without token_secret)")
         
-        logger.debug(f"Final signing key: {key}")
+        logger.debug(f"Generated signing key: {key}")
         return key
 
     def verify_signature(self, request):
