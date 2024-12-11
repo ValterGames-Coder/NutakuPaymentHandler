@@ -197,37 +197,47 @@ class OAuthSignature:
             s = ''
         s = str(s)
         
-        # 1. First convert existing percent-encoded sequences to uppercase
+        # Special handling for empty string
+        if not s:
+            return s
+            
+        # 1. First handle already encoded sequences
         s = re.sub(
             r'%[0-9a-fA-F]{2}',
             lambda m: m.group(0).upper(),
             s
         )
         
-        # 2. Encode remaining characters, being careful with already encoded ones
+        # 2. Encode remaining chars, carefully handling already encoded ones
         result = []
         i = 0
         while i < len(s):
-            if s[i] == '%' and i + 2 < len(s) and all(c in '0123456789ABCDEFabcdef' for c in s[i+1:i+3]):
-                # This is already a percent-encoded sequence, keep it
+            if (s[i] == '%' and 
+                i + 2 < len(s) and 
+                all(c in '0123456789ABCDEFabcdef' for c in s[i+1:i+3])):
+                # Already percent-encoded sequence - keep and uppercase
                 result.append(s[i:i+3].upper())
                 i += 3
             else:
-                # Encode this character
+                # Raw character - encode and uppercase
                 enc = quote(s[i], safe='')
                 result.append(enc.upper())
                 i += 1
         
         final = ''.join(result)
-        logger.debug(f"Encoded value: {s} -> {final}")
+        logger.debug(f"URL Encoded (uppercase): {s} -> {final}")
         return final
 
     def _generate_base_string(self, method, url, oauth_params, query_params):
-        """Generate OAuth base string according to spec"""
+        """Generate OAuth base string according to spec
+        Important: Include ALL parameters except oauth_signature and oauth_token_secret
+        """
         # 1. Get base URL (scheme, host, path)
         parsed_url = urlparse(url)
         base_url = f"{parsed_url.scheme}://{parsed_url.netloc}{parsed_url.path}"
         base_url = base_url.rstrip('?')  # Remove trailing question mark if present
+        
+        logger.debug(f"Starting base string generation with URL: {base_url}")
         
         # 2. Collect all parameters (CRITICAL: include ALL parameters except oauth_signature and oauth_token_secret)
         all_params = []
@@ -256,9 +266,12 @@ class OAuthSignature:
             encoded_pairs.append((k_enc, v_enc))
         
         # 4. Sort parameters by raw ASCII value (case-sensitive)
-        # This ensures payment_id comes after paymentId as required
-        encoded_pairs.sort(key=lambda x: (x[0], x[1]))
-        # encoded_pairs.sort(key=lambda x: x[0] + '=' + x[1])
+        # CRITICAL: payment_id MUST come after paymentId due to ASCII sorting
+        # This is done by using the raw string values for sorting
+        encoded_pairs.sort(key=lambda x: x[0])  # First sort by key only
+        
+        # Then stable sort by full pair to handle duplicate keys while preserving first sort
+        encoded_pairs.sort(key=lambda x: x[0] + '=' + x[1], reverse=False)
         
         # 5. Create parameter string - join with & and =
         param_string = '&'.join(f"{k}={v}" for k, v in encoded_pairs)
@@ -289,16 +302,17 @@ class OAuthSignature:
         # URL encode the consumer secret (maintaining uppercase encoding)
         encoded_secret = self._quote_uppercase(self.consumer_secret)
         
-        # First GET/POST always starts with "secret + &"
+        # For all first requests (POST/GET) - secret + &
         key = encoded_secret + '&'
         
-        # For second GET (payment completion), append token_secret
-        if method == 'GET' and token_secret:
-            # Add token_secret for second GET
-            key += self._quote_uppercase(token_secret)
-            logger.debug("Using second GET key format (with token_secret)")
+        # For second GET only (payment completion) - append token_secret
+        if token_secret:
+            # Important: URL encode the token_secret before appending
+            encoded_token_secret = self._quote_uppercase(token_secret)
+            key += encoded_token_secret
+            logger.debug("Using key format with token_secret")
         else:
-            logger.debug("Using first GET/POST key format (without token_secret)")
+            logger.debug("Using key format without token_secret")
         
         logger.debug(f"Generated signing key: {key}")
         return key
@@ -311,15 +325,6 @@ class OAuthSignature:
             logger.debug(f"Request Method: {request.method}")
             logger.debug(f"Request Args: {dict(request.args)}")
             logger.debug(f"Headers: {dict(request.headers)}")
-            
-            # Validate required parameters are present
-            required_params = {'oauth_consumer_key', 'oauth_nonce', 
-                             'oauth_signature_method', 'oauth_timestamp',
-                             'oauth_version'}
-            
-            # For GET requests in payment completion
-            if request.method == 'GET':
-                required_params.add('oauth_token')
             
             # Handle HTTPS forwarding
             forwarded_proto = request.headers.get('X-Forwarded-Proto')
