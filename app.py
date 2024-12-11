@@ -13,8 +13,6 @@ from flask import Flask, render_template, request, jsonify, send_from_directory
 import sqlite3
 
 class Config:
-    def __init__(self):
-        LOG_FILE = os.path.join(app.instance_path, 'payment_server.log')
     # API Settings
     NUTAKU_API_BASE = "https://sbox-osapi.nutaku.com/social_android/rest/"
     CONSUMER_KEY = os.environ.get('NUTAKU_CONSUMER_KEY', 'j0TXH1blsH66HRrQ')
@@ -34,6 +32,9 @@ class Config:
         'COMPLETED': 2,
         'CANCELED': 3
     }
+    def __init__(self):
+        # Initialize instance-specific attributes
+        self.LOG_FILE = os.path.join(app.instance_path, 'payment_server.log')
 
 class Database:
     def __init__(self):
@@ -128,6 +129,65 @@ class OAuthSignature:
         self.consumer_key = consumer_key
         self.consumer_secret = consumer_secret
 
+    def _generate_signature(self, base_string, signing_key):
+        """Generate HMAC-SHA1 signature according to OAuth spec"""
+        try:
+            # Create HMAC-SHA1 hash
+            hashed = hmac.new(
+                signing_key.encode('utf-8'),
+                base_string.encode('utf-8'),
+                hashlib.sha1
+            )
+            
+            # Base64 encode the hash
+            signature = base64.b64encode(hashed.digest()).decode('utf-8')
+            
+            logger.debug(f"Generated signature from:")
+            logger.debug(f"Base string: {base_string}")
+            logger.debug(f"Signing key: {signing_key}")
+            logger.debug(f"Signature: {signature}")
+            
+            return signature
+            
+        except Exception as e:
+            logger.error(f"Error generating signature: {str(e)}")
+            raise
+
+    def _parse_auth_header(self, auth_header):
+        """Parse OAuth parameters from Authorization header"""
+        params = {}
+        if not auth_header:
+            logger.debug("No Authorization header present")
+            return params
+            
+        if not auth_header.startswith('OAuth '):
+            logger.error(f"Invalid Authorization header format: {auth_header[:20]}...")
+            return params
+            
+        # Clean header value and split parts
+        header_value = auth_header.replace('\n', '').replace('\r', '')
+        parts = header_value[6:].split(',')
+        
+        for part in parts:
+            if '=' not in part:
+                continue
+                
+            key, value = part.split('=', 1)
+            key = key.strip()
+            
+            # Remove surrounding quotes and decode
+            value = value.strip(' "\'')
+            value = unquote(value)
+            
+            # Skip realm parameter as per documentation
+            if key == 'realm':
+                continue
+                
+            params[key] = value
+            
+        logger.debug(f"Parsed OAuth params: {params}")
+        return params
+
     def _quote_uppercase(self, s):
         """
         URL encode maintaining UPPERCASE encoding as specified in documentation.
@@ -174,7 +234,7 @@ class OAuthSignature:
                 all_params.append((k, v))
                 logger.debug(f"Added OAuth param: {k}={v}")
         
-        # Add ALL query parameters - VERY IMPORTANT
+        # Add ALL query parameters - VERY IMPORTANT per peer's comment
         for k, v in query_params.items():
             if isinstance(v, list):
                 # Sort multiple values to ensure consistent ordering
@@ -332,8 +392,9 @@ def log_request_info():
 
 # Configure logging
 os.makedirs(app.instance_path, exist_ok=True)
+config = Config()
 logging.basicConfig(
-    filename=os.path.join(app.instance_path, 'payment_server.log'),
+    filename=config.LOG_FILE,
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
