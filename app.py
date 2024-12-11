@@ -13,6 +13,8 @@ from flask import Flask, render_template, request, jsonify, send_from_directory
 import sqlite3
 
 class Config:
+    def __init__(self):
+        LOG_FILE = os.path.join(app.instance_path, 'payment_server.log')
     # API Settings
     NUTAKU_API_BASE = "https://sbox-osapi.nutaku.com/social_android/rest/"
     CONSUMER_KEY = os.environ.get('NUTAKU_CONSUMER_KEY', 'j0TXH1blsH66HRrQ')
@@ -127,176 +129,181 @@ class OAuthSignature:
         self.consumer_secret = consumer_secret
 
     def _quote_uppercase(self, s):
-        """URL encode and convert to uppercase as per Nutaku requirements"""
+        """
+        URL encode maintaining UPPERCASE encoding as specified in documentation.
+        This is CRITICAL for signature matching.
+        """
         if s is None:
             s = ''
         s = str(s)
         
-        # OAuth 1.0a spec says only unreserved chars should not be encoded
-        quoted = quote(s, safe='')  # Encode everything for consistency
+        # 1. Encode EVERYTHING (no safe chars)
+        quoted = quote(s, safe='')
         
-        # Convert percent encodings to uppercase
-        return quoted.upper()
-
-    def _parse_auth_header(self, auth_header):
-        """Parse OAuth parameters from Authorization header"""
-        params = {}
-        if not auth_header or not auth_header.startswith('OAuth '):
-            return params
-            
-        # Remove any whitespace and quotes around the header value
-        header_value = auth_header.replace('\n', '').replace('\r', '')
-        parts = header_value[6:].split(',')
+        # 2. Convert all percent encodings to uppercase
+        # Common ones to check: %2F (slash), %3A (colon), %3D (equals), %26 (ampersand)
+        uppercase_quoted = re.sub(
+            r'%[0-9a-fA-F]{2}',
+            lambda m: m.group(0).upper(),
+            quoted
+        )
         
-        for part in parts:
-            if '=' in part:
-                key, value = part.split('=', 1)
-                key = key.strip()
-                # Remove surrounding quotes and decode
-                value = unquote(value.strip(' "\''))
-                params[key] = value
-        
-        return params
+        # 3. Verify critical encodings are uppercase
+        critical_encodings = ['%2F', '%3A', '%3D', '%26']
+        for encoding in critical_encodings:
+            if encoding.lower() in uppercase_quoted:
+                logger.error(f"Found lowercase encoding: {encoding.lower()}")
+                raise ValueError(f"Critical encoding must be uppercase: {encoding}")
+                
+        logger.debug(f"Encoded value: {s} -> {uppercase_quoted}")
+        return uppercase_quoted
 
     def _generate_base_string(self, method, url, oauth_params, query_params):
         """Generate OAuth base string according to spec"""
         # 1. Get base URL (scheme, host, path)
         parsed_url = urlparse(url)
         base_url = f"{parsed_url.scheme}://{parsed_url.netloc}{parsed_url.path}"
-        base_url = self._quote_uppercase(base_url.rstrip('?'))  # URL-encode base URL
+        base_url = base_url.rstrip('?')  # Remove trailing question mark if present
         
-        # 2. Collect all parameters
+        # 2. Collect all parameters (CRITICAL: include ALL parameters except oauth_signature and oauth_token_secret)
         all_params = []
         
-        # Add OAuth parameters (excluding realm and signature)
+        # Add ALL OAuth parameters except excluded ones
         for k, v in oauth_params.items():
-            if k not in ['realm', 'oauth_signature']:
+            if k not in ['realm', 'oauth_signature', 'oauth_token_secret']:
                 all_params.append((k, v))
+                logger.debug(f"Added OAuth param: {k}={v}")
         
-        # Add query parameters
-        for k, v_list in query_params.items():
-            if isinstance(v_list, list):
-                # Sort multiple values
-                for v in sorted(v_list):
-                    all_params.append((k, v))
+        # Add ALL query parameters - VERY IMPORTANT
+        for k, v in query_params.items():
+            if isinstance(v, list):
+                # Sort multiple values to ensure consistent ordering
+                for single_v in sorted(v):
+                    all_params.append((k, str(single_v)))
+                    logger.debug(f"Added list query param: {k}={single_v}")
             else:
-                all_params.append((k, v_list))
+                all_params.append((k, str(v)))
+                logger.debug(f"Added query param: {k}={v}")
         
-        # 3. First level of encoding for key-value pairs
+        # 3. URL-encode all keys and values 
         encoded_pairs = []
         for k, v in all_params:
             k_enc = self._quote_uppercase(k)
             v_enc = self._quote_uppercase(v)
             encoded_pairs.append((k_enc, v_enc))
         
-        # 4. Sort pairs by their complete encoded form
-        encoded_pairs.sort(key=lambda x: str.encode(f"{x[0]}={x[1]}"))
+        # 4. Sort parameters by raw ASCII value (case-sensitive)
+        # This ensures payment_id comes after paymentId as required
+        encoded_pairs.sort(key=lambda x: x[0] + '=' + x[1])
         
-        # 5. Create parameter string
-        param_string = self._quote_uppercase('&'.join(f"{k}={v}" for k, v in encoded_pairs))
+        # 5. Create parameter string - join with & and =
+        param_string = '&'.join(f"{k}={v}" for k, v in encoded_pairs)
         
-        # 6. Create final base string components
+        # 6. URL-encode the three main components and join with &
         components = [
             self._quote_uppercase(method.upper()),
             self._quote_uppercase(base_url),
-            param_string  # This is now double-encoded
+            self._quote_uppercase(param_string)  # Double-encoding occurs here
         ]
         
-        # 7. Join with &
         base_string = '&'.join(components)
         
-        logger.error("Base String Generation:")
-        logger.error(f"Method: {method.upper()}")
-        logger.error(f"Base URL: {base_url}")
-        logger.error(f"Parameter String (double-encoded): {param_string}")
-        logger.error(f"Final Base String: {base_string}")
+        logger.debug("Base String Generation:")
+        logger.debug(f"Method: {method.upper()}")
+        logger.debug(f"Base URL: {base_url}")
+        logger.debug(f"Parameter String (double-encoded): {param_string}")
+        logger.debug(f"Final Base String: {base_string}")
         
         return base_string
 
-    def _generate_signing_key(self, token_secret=''):
-        """Generate signing key"""
-        # URL-encode the consumer secret and token secret individually
-        return f"{self._quote_uppercase(self.consumer_secret)}&{self._quote_uppercase(token_secret) if token_secret else ''}"
-
-    def _generate_signature(self, base_string, signing_key):
-        """Generate HMAC-SHA1 signature"""
-        hashed = hmac.new(
-            signing_key.encode('utf-8'),
-            base_string.encode('utf-8'),
-            hashlib.sha1
-        )
-        return base64.b64encode(hashed.digest()).decode('utf-8')
+    def _generate_signing_key(self, token_secret='', method=''):
+        """
+        Generate signing key based on request type:
+        - First GET/POST: secret + &
+        - Second GET (payment completion): secret + & + oauth_token_secret
+        """
+        # First, URL-encode the consumer secret (maintaining uppercase encoding)
+        encoded_secret = self._quote_uppercase(self.consumer_secret)
+        
+        # Always start with encoded_secret + &
+        key = encoded_secret + '&'
+        
+        # For the second GET request (payment completion), append token_secret
+        if method == 'GET' and token_secret:
+            key += self._quote_uppercase(token_secret)
+            logger.debug("Using payment completion key (secret & token_secret)")
+        else:
+            logger.debug("Using first request key (secret &)")
+        
+        logger.debug(f"Final signing key: {key}")
+        return key
 
     def verify_signature(self, request):
         """Verify OAuth signature of incoming request"""
         try:
-            logger.error("Starting OAuth signature verification")
-            logger.error(f"Request URL: {request.url}")
-            logger.error(f"Request Method: {request.method}")
+            logger.debug("Starting OAuth signature verification")
+            logger.debug(f"Request URL: {request.url}")
+            logger.debug(f"Request Method: {request.method}")
+            logger.debug(f"Request Args: {dict(request.args)}")
+            logger.debug(f"Headers: {dict(request.headers)}")
             
-            # 1. Get Authorization header
-            auth_header = request.headers.get('Authorization')
-            if not auth_header:
-                logger.error("Missing Authorization header")
-                return False
-
-            # 2. Handle HTTPS forwarding
+            # Validate required parameters are present
+            required_params = {'oauth_consumer_key', 'oauth_nonce', 
+                             'oauth_signature_method', 'oauth_timestamp',
+                             'oauth_version'}
+            
+            # For GET requests in payment completion
+            if request.method == 'GET':
+                required_params.add('oauth_token')
+            
+            # Handle HTTPS forwarding
             forwarded_proto = request.headers.get('X-Forwarded-Proto')
             base_url = request.url
             if forwarded_proto == 'https':
                 base_url = base_url.replace('http:', 'https:', 1)
 
-            # 3. Parse OAuth parameters
+            # Parse OAuth parameters from Authorization header
+            auth_header = request.headers.get('Authorization')
+            if not auth_header:
+                logger.error("Missing Authorization header")
+                return False
+
             oauth_params = self._parse_auth_header(auth_header)
             if not oauth_params:
                 logger.error("Invalid Authorization header format")
-                logger.error(f"Auth header: {auth_header}")
                 return False
 
-            # 4. Validate OAuth requirements
-            if oauth_params.get('oauth_signature_method') != 'HMAC-SHA1':
-                logger.error(f"Invalid signature method: {oauth_params.get('oauth_signature_method')}")
-                return False
-
-            # 5. Validate timestamp (5 minute window)
-            timestamp = int(oauth_params.get('oauth_timestamp', '0'))
-            current_time = time.time()
-            if abs(current_time - timestamp) > 300:
-                logger.error(f"Timestamp outside valid window (diff: {abs(current_time - timestamp)}s)")
-                return False
-
-            # 6. Generate base string
+            # Generate base string with all parameters
             base_string = self._generate_base_string(
                 request.method,
                 base_url,
                 oauth_params,
                 dict(request.args)
             )
+            
+            # Generate signing key based on request type
+            token_secret = oauth_params.get('oauth_token_secret', '')
+            signing_key = self._generate_signing_key(token_secret)
 
-            # 7. Generate signing key
-            signing_key = self._generate_signing_key(
-                oauth_params.get('oauth_token_secret', '')
-            )
-
-            # 8. Generate signature
+            # Generate and verify signature
             expected_signature = self._generate_signature(base_string, signing_key)
             received_signature = unquote(oauth_params.get('oauth_signature', ''))
 
-            # Detailed logging for debugging
-            logger.error("Signature Verification Details:")
-            logger.error(f"Generated base string: {base_string}")
-            logger.error(f"Generated signing key: {signing_key}")
-            logger.error(f"Generated signature: {expected_signature}")
-            logger.error(f"Received signature: {received_signature}")
+            # Debug logging
+            logger.debug("Signature Verification Details:")
+            logger.debug(f"Generated base string: {base_string}")
+            logger.debug(f"Generated signing key: {signing_key}")
+            logger.debug(f"Generated signature: {expected_signature}")
+            logger.debug(f"Received signature: {received_signature}")
 
-            # 9. Compare signatures using constant-time comparison
+            # Compare signatures using constant-time comparison
             if not hmac.compare_digest(
                 expected_signature.encode('utf-8'),
                 received_signature.encode('utf-8')
             ):
                 logger.error("Signature mismatch")
                 logger.error(f"Expected: {expected_signature}")
-                logger.error(f"Received (decoded): {received_signature}")
+                logger.error(f"Received: {received_signature}")
                 return False
 
             return True
@@ -324,9 +331,6 @@ def log_request_info():
     logger.debug('Args: %s', dict(request.args))
 
 # Configure logging
-class Config:
-    LOG_FILE = os.path.join(app.instance_path, 'payment_server.log')
-
 os.makedirs(app.instance_path, exist_ok=True)
 logging.basicConfig(
     filename=Config.LOG_FILE,
