@@ -142,7 +142,7 @@ class OAuthSignature:
             # Base64 encode the hash
             signature = base64.b64encode(hashed.digest()).decode('utf-8')
             
-            logger.debug(f"Generated signature from:")
+            logger.debug(f"Generated signature:")
             logger.debug(f"Base string: {base_string}")
             logger.debug(f"Signing key: {signing_key}")
             logger.debug(f"Signature: {signature}")
@@ -154,7 +154,7 @@ class OAuthSignature:
             raise
 
     def _parse_auth_header(self, auth_header):
-        """Parse OAuth parameters from Authorization header"""
+        """Parse OAuth parameters from Authorization header, keeping values URL-encoded"""
         params = {}
         if not auth_header:
             logger.debug("No Authorization header present")
@@ -175,28 +175,23 @@ class OAuthSignature:
             key, value = part.split('=', 1)
             key = key.strip()
             
-            # Remove surrounding quotes and decode
+            # Remove surrounding quotes but keep URL encoding
             value = value.strip(' "\'')
-            value = unquote(value)
             
             # Skip realm parameter as per documentation
             if key == 'realm':
                 continue
                 
+            # Store the still-encoded value
             params[key] = value
             
-        logger.debug(f"Parsed OAuth params: {params}")
+        logger.debug(f"Parsed OAuth params (URL-encoded): {params}")
         return params
 
     def _quote_uppercase(self, s):
         """
-        URL encode maintaining UPPERCASE encoding as specified in documentation:
-        "URL-encoded characters should be done as uppercase (i.e. the encoded slash 
-        character must be %2F, not %2f). There are some functions/methods in certain 
-        languages that result in lowercase encoding - you need to adjust the output 
-        of those functions, or use different functions."
-        
-        This is CRITICAL for signature matching.
+        URL encode maintaining UPPERCASE encoding as specified in documentation.
+        All encoded characters must be uppercase (e.g. %2F not %2f).
         """
         if s is None:
             s = ''
@@ -206,30 +201,16 @@ class OAuthSignature:
         if not s:
             return s
             
-        # 1. First handle already encoded sequences
-        s = re.sub(
+        # First URL encode the string
+        encoded = quote(s, safe='')
+        
+        # Then force all percent-encoded sequences to uppercase
+        final = re.sub(
             r'%[0-9a-fA-F]{2}',
             lambda m: m.group(0).upper(),
-            s
+            encoded
         )
         
-        # 2. Encode remaining chars, carefully handling already encoded ones
-        result = []
-        i = 0
-        while i < len(s):
-            if (s[i] == '%' and 
-                i + 2 < len(s) and 
-                all(c in '0123456789ABCDEFabcdef' for c in s[i+1:i+3])):
-                # Already percent-encoded sequence - keep and uppercase
-                result.append(s[i:i+3].upper())
-                i += 3
-            else:
-                # Raw character - encode and uppercase
-                enc = quote(s[i], safe='')
-                result.append(enc.upper())
-                i += 1
-        
-        final = ''.join(result)
         logger.debug(f"URL Encoded (uppercase): {s} -> {final}")
         return final
 
@@ -249,79 +230,64 @@ class OAuthSignature:
         """
         Generate OAuth base string according to OAuth 1.0a spec and Nutaku requirements.
         
-        As per documentation:
-        - Must include ALL parameters except oauth_signature and oauth_token_secret
-        - Must include all GET/POST parameters from URL and body (if form-encoded POST)
-        - Must maintain case-sensitive ASCII sorting
-        - All components must be properly URL encoded (uppercase)
-        - URL must not end with just a question mark (this will cause OAuth to misbehave)
+        Args:
+            method (str): HTTP method
+            url (str): Full request URL
+            oauth_params (dict): OAuth parameters from Authorization header
+            query_params (dict): Query parameters from URL
+            
+        Returns:
+            str: The generated base string
         """
         # 1. Get base URL (scheme, host, path)
         parsed_url = urlparse(url)
         base_url = f"{parsed_url.scheme}://{parsed_url.netloc}{parsed_url.path}"
-        
-        # CRITICAL: Check for and handle URL ending with bare question mark
         if base_url.endswith('?'):
-            logger.warning("URL ends with bare question mark - this will cause OAuth validation to fail")
             base_url = base_url.rstrip('?')
             
-        logger.debug(f"Starting base string generation with URL: {base_url}")
+        # 2. Parse raw query parameters to maintain original encoding
+        raw_query_params = parse_qs(
+            parsed_url.query,
+            keep_blank_values=True
+        )
         
-        # 2. Collect all parameters
+        # 3. Collect all parameters
         all_params = []
         
         # Add OAuth parameters (except excluded ones)
         for k, v in oauth_params.items():
             if k not in ['realm', 'oauth_signature', 'oauth_token_secret']:
                 all_params.append((k, v))
-                logger.debug(f"Added OAuth param: {k}={v}")
         
-        # Add query parameters
-        for k, v in query_params.items():
-            if isinstance(v, list):
-                for single_v in sorted(v):
-                    all_params.append((k, str(single_v)))
-                    logger.debug(f"Added query param: {k}={single_v}")
-            else:
-                all_params.append((k, str(v)))
-                logger.debug(f"Added query param: {k}={v}")
-                
-        # 3. URL-encode all keys and values
+        # Add query parameters (handling multiple values)
+        for k, v_list in raw_query_params.items():
+            for v in sorted(v_list):  # Sort multiple values for consistency
+                all_params.append((k, v))
+        
+        # 4. URL-encode each parameter name and value separately
+        # Maintain case-sensitive ASCII sorting
         encoded_pairs = []
         for k, v in all_params:
             k_enc = self._quote_uppercase(k)
             v_enc = self._quote_uppercase(v)
             encoded_pairs.append((k_enc, v_enc))
         
-        # 4. Sort parameters by raw ASCII value (case-sensitive)
-        # CRITICAL: payment_id MUST come after paymentId due to ASCII sorting
-        # Docs: "sorting must be case-sensitive following raw ASCII char numerical id/value"
-        encoded_pairs.sort(key=lambda x: x[0])  # First sort keys by ASCII value
+        # Sort by ASCII value (case-sensitive)
+        encoded_pairs.sort(key=lambda x: (x[0], x[1]))
         
-        # For same keys, sort by values
-        # Using stable sort to maintain relative ordering of different keys
-        encoded_pairs = sorted(
-            encoded_pairs,
-            key=lambda x: (x[0], x[1])  # Sort by key then value, using ASCII ordering
-        )
-        
-        # 5. Create parameter string - join with & and =
+        # 5. Create parameter string with already-encoded values
         param_string = '&'.join(f"{k}={v}" for k, v in encoded_pairs)
         
-        # 6. URL-encode the three main components and join with &
+        # 6. Join components with &, encoding the parameter string again
+        # This ensures double-encoding of separators
         components = [
-            self._quote_uppercase(method.upper()),  # Method always uppercase
-            self._quote_uppercase(base_url),        # URL encoded
-            self._quote_uppercase(param_string)     # Parameters double-encoded here
+            self._quote_uppercase(method.upper()),
+            self._quote_uppercase(base_url),
+            self._quote_uppercase(param_string)  # Second encoding of & and =
         ]
         
         base_string = '&'.join(components)
-        
-        logger.debug("Base String Generation:")
-        logger.debug(f"Method: {method.upper()}")
-        logger.debug(f"Base URL: {base_url}")
-        logger.debug(f"Parameter String (double-encoded): {param_string}")
-        logger.debug(f"Final Base String: {base_string}")
+        logger.debug(f"Base String: {base_string}")
         
         return base_string
 
@@ -329,48 +295,31 @@ class OAuthSignature:
         """
         Generate signing key according to OAuth 1.0a spec and Nutaku requirements:
         
-        2-legged requests (first requests):
-        - Key is consumer_secret + "&"
-        
-        3-legged requests (with oauth_token):
-        - Key is consumer_secret + "&" + oauth_token_secret
-        
-        As per peer: "first GET request it simply consists of your secret + &"
-        and "second oauth_token_secret comes and the key will already be secret + & + oauth_token_secret"
+        First GET request: consumer_secret + "&"
+        Second request with token: consumer_secret + "&" + oauth_token_secret
         """
-        # URL encode the consumer secret (maintaining uppercase encoding)
+        # First encode the consumer secret
         encoded_secret = self._quote_uppercase(self.consumer_secret)
         
-        # For 2-legged requests or first request in flow: secret + &
-        key = encoded_secret + '&'
-        
-        # For 3-legged requests or second request with token: append token_secret
-        if token_secret:
-            # Important: URL encode the token_secret before appending
-            encoded_token_secret = self._quote_uppercase(token_secret)
-            key += encoded_token_secret
-            logger.debug("Using 3-legged auth signing key (with token_secret)")
+        # For first request: secret + &
+        if not token_secret:
+            key = encoded_secret + '&'
+            logger.debug("Using first request key (secret + &)")
+        # For second request: secret + & + token_secret
         else:
-            logger.debug("Using 2-legged auth signing key (without token_secret)")
+            encoded_token_secret = self._quote_uppercase(token_secret)
+            key = encoded_secret + '&' + encoded_token_secret
+            logger.debug("Using second request key (secret + & + token_secret)")
         
-        logger.debug(f"Generated signing key: {key}")
+        logger.debug(f"Signing key: {key}")
         return key
 
     def verify_signature(self, request):
-        """
-        Verify OAuth signature of incoming request.
-        
-        Note: If using Apache with mod_security or PHP with CGI, the Authorization 
-        header may be stripped. You'll need to either:
-        1. Remove mod_security if not needed
-        2. Add RewriteRule in .htaccess to preserve the header
-        3. Get the header from a different source (e.g. HTTP_AUTHORIZATION)
-        """
         try:
             logger.debug("Starting OAuth signature verification")
             logger.debug(f"Request URL: {request.url}")
             logger.debug(f"Request Method: {request.method}")
-            logger.debug(f"Request Args: {dict(request.args)}")
+            logger.debug(f"Request Args: {dict(request.args)}")  # Keep this for logging
             logger.debug(f"Headers: {dict(request.headers)}")
             
             # Handle HTTPS forwarding
@@ -390,12 +339,16 @@ class OAuthSignature:
                 logger.error("Invalid Authorization header format")
                 return False
 
+            # Parse query string directly from URL instead of using request.args
+            parsed_url = urlparse(base_url)
+            query_params = parse_qs(parsed_url.query, keep_blank_values=True)
+
             # Generate base string with all parameters
             base_string = self._generate_base_string(
                 request.method,
                 base_url,
                 oauth_params,
-                dict(request.args)
+                query_params  # Pass the raw parsed query parameters
             )
             
             # Generate signing key based on request type
@@ -418,9 +371,16 @@ class OAuthSignature:
                 expected_signature.encode('utf-8'),
                 received_signature.encode('utf-8')
             ):
-                logger.error("Signature mismatch")
-                logger.error(f"Expected: {expected_signature}")
-                logger.error(f"Received: {received_signature}")
+                logger.error("=== Signature Mismatch Details ===")
+                logger.error(f"Method: {request.method}")
+                logger.error(f"URL: {base_url}")
+                logger.error(f"OAuth Params: {oauth_params}")
+                logger.error(f"Query Params: {dict(request.args)}")
+                logger.error(f"Base String: {base_string}")
+                logger.error(f"Signing Key: {signing_key}")
+                logger.error(f"Expected Signature: {expected_signature}")
+                logger.error(f"Received Signature: {received_signature}")
+                logger.error("===============================")
                 return False
 
             return True
@@ -452,7 +412,7 @@ os.makedirs(app.instance_path, exist_ok=True)
 config = Config()
 logging.basicConfig(
     filename=config.LOG_FILE,
-    level=logging.INFO,
+    level=logging.DEBUG,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
