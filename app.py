@@ -451,9 +451,25 @@ def payment_callback():
                 payment_data = request.get_json()
                 logger.info(f"Payment data received: {payment_data}")
                 
-                payment_entry = payment_data.get('entry', {})
+                transformed_payment = {
+                    "entry": {
+                        "paymentId": payment_data.get('PAYMENT_ID'),
+                        "status": 1,  
+                        "orderedTime": payment_data.get('ORDERED_TIME'),
+                        "paymentItems": [{
+                            "itemId": item['SKU_ID'],
+                            "itemName": item['NAME'],
+                            "unitPrice": str(item['PRICE']), 
+                            "quantity": str(item['COUNT']),
+                            "imageUrl": item.get('IMAGE_URL', ''),
+                            "description": item.get('DESCRIPTION', '')
+                        } for item in payment_data.get('ITEMS', [])]
+                    }
+                }
+                
+                payment_entry = transformed_payment.get('entry')
                 if not payment_entry:
-                    logger.error("No entry in payment data")
+                    logger.error("No entry in transformed payment data")
                     return jsonify({"response_code": "ERROR"}), 400
                     
                 payment_items = payment_entry.get('paymentItems', [])
@@ -461,38 +477,39 @@ def payment_callback():
                     logger.error("No payment items found")
                     return jsonify({"response_code": "ERROR"}), 400
                 
-                payment_id = (payment_entry.get('paymentId') or 
-                            payment_entry.get('payment_id'))
-                
                 payment_info = {
-                    'payment_id': payment_id,
+                    'payment_id': payment_entry['paymentId'],
                     'user_id': request.args.get('opensocial_viewer_id'),
                     'owner_id': request.args.get('opensocial_owner_id'),
-                    'status': payment_entry.get('status', 0),
-                    'ordered_time': payment_entry.get('orderedTime'),
-                    'item_id': payment_items[0].get('itemId'),
-                    'item_name': payment_items[0].get('itemName'),
-                    'quantity': int(payment_items[0].get('quantity', '1')),
-                    'unit_price': payment_items[0].get('unitPrice')
+                    'status': payment_entry.get('status', 1),
+                    'ordered_time': payment_entry['orderedTime'],
+                    'item_id': payment_items[0]['itemId'],
+                    'item_name': payment_items[0]['itemName'],
+                    'quantity': int(payment_items[0]['quantity']),
+                    'unit_price': int(payment_items[0]['unitPrice'])
                 }
                 
                 if not all(payment_info.values()):
                     logger.error(f"Missing required payment fields: {payment_info}")
                     return jsonify({"response_code": "ERROR"}), 400
                 
-                # Log if owner_id doesn't match viewer_id
                 if payment_info['owner_id'] != payment_info['user_id']:
-                    logger.warning(f"owner_id ({payment_info['owner_id']}) does not match viewer_id ({payment_info['user_id']})")
+                    logger.warning(
+                        f"owner_id ({payment_info['owner_id']}) does not match "
+                        f"viewer_id ({payment_info['user_id']})"
+                    )
                 
                 db.create_payment(payment_info)
                 logger.info(f"Successfully stored payment: {payment_info['payment_id']}")
                 
-                # Construct the Nutaku-compliant response
                 response_data = {
                     "entry": {
                         "paymentId": payment_info['payment_id'],
                         "status": payment_info['status'],
-                        "transactionUrl": f"https://{request.host}/application/-/purchase/=/payment_id={payment_info['payment_id']}",
+                        "transactionUrl": (
+                            f"https://{request.host}/application/-/purchase/="
+                            f"/payment_id={payment_info['payment_id']}"
+                        ),
                         "orderedTime": payment_info['ordered_time']
                     }
                 }
@@ -512,16 +529,16 @@ def payment_callback():
                 owner_id = request.args.get('opensocial_owner_id')
                 ordered_time = request.args.get('orderedTime')
                 
-                # Log all received parameters
-                logger.info(f"Received parameters: payment_id={payment_id}, "
-                          f"status={status}, user_id={user_id}, "
-                          f"owner_id={owner_id}, ordered_time={ordered_time}")
+                logger.info(
+                    f"Received parameters: payment_id={payment_id}, "
+                    f"status={status}, user_id={user_id}, "
+                    f"owner_id={owner_id}, ordered_time={ordered_time}"
+                )
                 
                 if not all([payment_id, status, user_id, owner_id]):
                     logger.error("Missing required parameters in completion confirmation")
                     return jsonify({"response_code": "ERROR"}), 400
                 
-                # Validate status format and value
                 validated_status = validate_payment_status(status)
                 if validated_status is None:
                     return jsonify({"response_code": "ERROR"}), 400
@@ -532,9 +549,11 @@ def payment_callback():
                     return jsonify({"response_code": "ERROR"}), 404
                 
                 if payment['user_id'] != user_id or payment['owner_id'] != owner_id:
-                    logger.error(f"User/Owner ID mismatch: viewer={user_id}, "
-                               f"owner={owner_id}, stored_user={payment['user_id']}, "
-                               f"stored_owner={payment['owner_id']}")
+                    logger.error(
+                        f"User/Owner ID mismatch: viewer={user_id}, "
+                        f"owner={owner_id}, stored_user={payment['user_id']}, "
+                        f"stored_owner={payment['owner_id']}"
+                    )
                     return jsonify({"response_code": "ERROR"}), 401
                 
                 db.update_payment_status(payment_id, validated_status)
