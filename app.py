@@ -465,7 +465,7 @@ def payment_callback():
                 
                 if not all(payment_info.values()):
                     logger.error(f"Missing required payment fields: {payment_info}")
-                    return '', 400
+                    return jsonify({"response_code": "ERROR"}), 400
                 
                 if payment_info['owner_id'] != payment_info['user_id']:
                     logger.warning(
@@ -476,11 +476,11 @@ def payment_callback():
                 db.create_payment(payment_info)
                 logger.info(f"Successfully stored payment: {payment_info['payment_id']}")
                 
-                return '', 200
+                return jsonify({"response_code": "OK"}), 200
                 
             except Exception as e:
                 logger.error(f"Error processing payment creation: {str(e)}")
-                return '', 400
+                return jsonify({"response_code": "ERROR"}), 400
 
         elif request.method == 'GET':
             try:
@@ -498,16 +498,16 @@ def payment_callback():
                 
                 if not all([payment_id, status, user_id, owner_id]):
                     logger.error("Missing required parameters in completion confirmation")
-                    return '', 400
+                    return jsonify({"response_code": "ERROR"}), 400
                 
                 validated_status = validate_payment_status(status)
                 if validated_status is None:
-                    return '', 400
+                    return jsonify({"response_code": "ERROR"}), 400
                 
                 payment = db.get_payment(payment_id)
                 if not payment:
                     logger.error(f"Payment not found: {payment_id}")
-                    return '', 404
+                    return jsonify({"response_code": "ERROR"}), 404
                 
                 if payment['user_id'] != user_id or payment['owner_id'] != owner_id:
                     logger.error(
@@ -515,20 +515,20 @@ def payment_callback():
                         f"owner={owner_id}, stored_user={payment['user_id']}, "
                         f"stored_owner={payment['owner_id']}"
                     )
-                    return '', 401
+                    return jsonify({"response_code": "ERROR"}), 401
                 
                 db.update_payment_status(payment_id, validated_status)
                 logger.info(f"Payment {payment_id} status updated to {validated_status}")
                 
-                return '', 200
+                return jsonify({"response_code": "OK"}), 200
                 
             except Exception as e:
                 logger.error(f"Error processing payment completion: {str(e)}")
-                return '', 400
+                return jsonify({"response_code": "ERROR"}), 400
 
     except Exception as e:
         logger.error(f"Unexpected error in payment callback: {str(e)}")
-        return '', 500
+        return jsonify({"response_code": "ERROR"}), 500
 
 @app.route('/finish', methods=['GET', 'POST'])
 def payment_finish():
