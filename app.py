@@ -451,47 +451,21 @@ def payment_callback():
                 payment_data = request.get_json()
                 logger.info(f"Payment data received: {payment_data}")
                 
-                transformed_payment = {
-                    "entry": {
-                        "paymentId": payment_data.get('PAYMENT_ID'),
-                        "status": 1,  
-                        "orderedTime": payment_data.get('ORDERED_TIME'),
-                        "paymentItems": [{
-                            "itemId": item['SKU_ID'],
-                            "itemName": item['NAME'],
-                            "unitPrice": str(item['PRICE']), 
-                            "quantity": str(item['COUNT']),
-                            "imageUrl": item.get('IMAGE_URL', ''),
-                            "description": item.get('DESCRIPTION', '')
-                        } for item in payment_data.get('ITEMS', [])]
-                    }
-                }
-                
-                payment_entry = transformed_payment.get('entry')
-                if not payment_entry:
-                    logger.error("No entry in transformed payment data")
-                    return jsonify({"response_code": "ERROR"}), 400
-                    
-                payment_items = payment_entry.get('paymentItems', [])
-                if not payment_items:
-                    logger.error("No payment items found")
-                    return jsonify({"response_code": "ERROR"}), 400
-                
                 payment_info = {
-                    'payment_id': payment_entry['paymentId'],
+                    'payment_id': payment_data.get('PAYMENT_ID'),
                     'user_id': request.args.get('opensocial_viewer_id'),
                     'owner_id': request.args.get('opensocial_owner_id'),
-                    'status': payment_entry.get('status', 1),
-                    'ordered_time': payment_entry['orderedTime'],
-                    'item_id': payment_items[0]['itemId'],
-                    'item_name': payment_items[0]['itemName'],
-                    'quantity': int(payment_items[0]['quantity']),
-                    'unit_price': int(payment_items[0]['unitPrice'])
+                    'status': 1,
+                    'ordered_time': payment_data.get('ORDERED_TIME'),
+                    'item_id': payment_data['ITEMS'][0]['SKU_ID'],
+                    'item_name': payment_data['ITEMS'][0]['NAME'],
+                    'quantity': int(payment_data['ITEMS'][0]['COUNT']),
+                    'unit_price': int(payment_data['ITEMS'][0]['PRICE'])
                 }
                 
                 if not all(payment_info.values()):
                     logger.error(f"Missing required payment fields: {payment_info}")
-                    return jsonify({"response_code": "ERROR"}), 400
+                    return '', 400
                 
                 if payment_info['owner_id'] != payment_info['user_id']:
                     logger.warning(
@@ -502,23 +476,11 @@ def payment_callback():
                 db.create_payment(payment_info)
                 logger.info(f"Successfully stored payment: {payment_info['payment_id']}")
                 
-                response_data = {
-                    "entry": {
-                        "paymentId": payment_info['payment_id'],
-                        "status": payment_info['status'],
-                        "transactionUrl": (
-                            f"https://{request.host}/application/-/purchase/="
-                            f"/payment_id={payment_info['payment_id']}"
-                        ),
-                        "orderedTime": payment_info['ordered_time']
-                    }
-                }
-                
-                return jsonify(response_data), 201
+                return '', 200
                 
             except Exception as e:
                 logger.error(f"Error processing payment creation: {str(e)}")
-                return jsonify({"response_code": "ERROR"}), 500
+                return '', 400
 
         elif request.method == 'GET':
             try:
@@ -527,26 +489,25 @@ def payment_callback():
                 status = request.args.get('status')
                 user_id = request.args.get('opensocial_viewer_id')
                 owner_id = request.args.get('opensocial_owner_id')
-                ordered_time = request.args.get('orderedTime')
                 
                 logger.info(
                     f"Received parameters: payment_id={payment_id}, "
                     f"status={status}, user_id={user_id}, "
-                    f"owner_id={owner_id}, ordered_time={ordered_time}"
+                    f"owner_id={owner_id}"
                 )
                 
                 if not all([payment_id, status, user_id, owner_id]):
                     logger.error("Missing required parameters in completion confirmation")
-                    return jsonify({"response_code": "ERROR"}), 400
+                    return '', 400
                 
                 validated_status = validate_payment_status(status)
                 if validated_status is None:
-                    return jsonify({"response_code": "ERROR"}), 400
+                    return '', 400
                 
                 payment = db.get_payment(payment_id)
                 if not payment:
                     logger.error(f"Payment not found: {payment_id}")
-                    return jsonify({"response_code": "ERROR"}), 404
+                    return '', 404
                 
                 if payment['user_id'] != user_id or payment['owner_id'] != owner_id:
                     logger.error(
@@ -554,20 +515,20 @@ def payment_callback():
                         f"owner={owner_id}, stored_user={payment['user_id']}, "
                         f"stored_owner={payment['owner_id']}"
                     )
-                    return jsonify({"response_code": "ERROR"}), 401
+                    return '', 401
                 
                 db.update_payment_status(payment_id, validated_status)
                 logger.info(f"Payment {payment_id} status updated to {validated_status}")
                 
-                return jsonify({"response_code": "OK"}), 200
+                return '', 200
                 
             except Exception as e:
                 logger.error(f"Error processing payment completion: {str(e)}")
-                return jsonify({"response_code": "ERROR"}), 500
+                return '', 400
 
     except Exception as e:
         logger.error(f"Unexpected error in payment callback: {str(e)}")
-        return jsonify({"response_code": "ERROR"}), 500
+        return '', 500
 
 @app.route('/finish', methods=['GET', 'POST'])
 def payment_finish():
