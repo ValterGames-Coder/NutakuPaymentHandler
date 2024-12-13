@@ -487,7 +487,17 @@ def payment_callback():
                 db.create_payment(payment_info)
                 logger.info(f"Successfully stored payment: {payment_info['payment_id']}")
                 
-                return jsonify({"response_code": "OK"}), 200
+                # Construct the Nutaku-compliant response
+                response_data = {
+                    "entry": {
+                        "paymentId": payment_info['payment_id'],
+                        "status": payment_info['status'],
+                        "transactionUrl": f"https://{request.host}/application/-/purchase/=/payment_id={payment_info['payment_id']}",
+                        "orderedTime": payment_info['ordered_time']
+                    }
+                }
+                
+                return jsonify(response_data), 201
                 
             except Exception as e:
                 logger.error(f"Error processing payment creation: {str(e)}")
