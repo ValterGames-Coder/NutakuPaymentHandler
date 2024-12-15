@@ -227,68 +227,55 @@ class OAuthSignature:
         return {}
 
     def _generate_base_string(self, method, url, oauth_params, query_params):
-        """
-        Generate OAuth base string according to OAuth 1.0a spec and Nutaku requirements.
-        
-        Args:
-            method (str): HTTP method
-            url (str): Full request URL
-            oauth_params (dict): OAuth parameters from Authorization header
-            query_params (dict): Query parameters from URL
-            
-        Returns:
-            str: The generated base string
-        """
-        # 1. Get base URL (scheme, host, path)
         parsed_url = urlparse(url)
         base_url = f"{parsed_url.scheme}://{parsed_url.netloc}{parsed_url.path}"
         if base_url.endswith('?'):
             base_url = base_url.rstrip('?')
-            
-        # 2. Parse raw query parameters to maintain original encoding
-        raw_query_params = parse_qs(
-            parsed_url.query,
-            keep_blank_values=True
-        )
         
-        # 3. Collect all parameters
+        raw_query_params = parse_qs(parsed_url.query, keep_blank_values=True)
+        
+        # Collect all parameters
         all_params = []
-        
+
         # Add OAuth parameters (except excluded ones)
         for k, v in oauth_params.items():
             if k not in ['realm', 'oauth_signature', 'oauth_token_secret']:
                 all_params.append((k, v))
-        
-        # Add query parameters (handling multiple values)
+
+        # Add query parameters
         for k, v_list in raw_query_params.items():
-            for v in sorted(v_list):  # Sort multiple values for consistency
+            for v in sorted(v_list):  
                 all_params.append((k, v))
         
-        # 4. URL-encode each parameter name and value separately
-        # Maintain case-sensitive ASCII sorting
+        # If it's a GET request and both payment_id and paymentId appear,
+        # remove payment_id from the parameter list before building the signature.
+        if method.upper() == 'GET':
+            paymentId_present = any(k == 'paymentId' for k, _ in all_params)
+            payment_id_present = any(k == 'payment_id' for k, _ in all_params)
+            if paymentId_present and payment_id_present:
+                # Remove 'payment_id' to avoid signature mismatches
+                all_params = [(k, v) for (k, v) in all_params if k != 'payment_id']
+        
+        # URL-encode each parameter name and value
         encoded_pairs = []
         for k, v in all_params:
             k_enc = self._quote_uppercase(k)
             v_enc = self._quote_uppercase(v)
             encoded_pairs.append((k_enc, v_enc))
-        
-        # Sort by ASCII value (case-sensitive)
+
+        # Sort by ASCII value
         encoded_pairs.sort(key=lambda x: (x[0], x[1]))
-        
-        # 5. Create parameter string with already-encoded values
+
         param_string = '&'.join(f"{k}={v}" for k, v in encoded_pairs)
-        
-        # 6. Join components with &, encoding the parameter string again
-        # This ensures double-encoding of separators
+
         components = [
             self._quote_uppercase(method.upper()),
             self._quote_uppercase(base_url),
-            self._quote_uppercase(param_string)  # Second encoding of & and =
+            self._quote_uppercase(param_string)
         ]
-        
         base_string = '&'.join(components)
+
         logger.debug(f"Base String: {base_string}")
-        
         return base_string
 
     def _generate_signing_key(self, token_secret='', method=''):
