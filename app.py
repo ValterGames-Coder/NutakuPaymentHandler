@@ -23,7 +23,7 @@ class Config:
     port = 5000
         
     # Paths
-    UPLOAD_FOLDER = 'images'
+    UPLOAD_FOLDER = '/var/www/NutakuPaymentHandler/images'
     DB_FILE = 'payments.db'
         
 
@@ -373,7 +373,7 @@ class OAuthSignature:
             return False
 
 app = Flask(__name__)
-app.config['UPLOAD_FOLDER'] = os.path.join(app.root_path, 'images')
+app.config['UPLOAD_FOLDER'] = Config.UPLOAD_FOLDER
 
 db = Database()
 oauth = OAuthSignature(Config.CONSUMER_KEY, Config.CONSUMER_SECRET)
@@ -520,10 +520,18 @@ def payment_finish():
 @app.route('/images/<filename>')
 def serve_image(filename):
     try:
+        logger.debug(f"Attempting to serve image: {filename}")
+        logger.debug(f"Upload folder path: {app.config['UPLOAD_FOLDER']}")
+        logger.debug(f"Full file path: {os.path.join(app.config['UPLOAD_FOLDER'], filename)}")
+        
+        if not os.path.exists(os.path.join(app.config['UPLOAD_FOLDER'], filename)):
+            logger.error(f"File {filename} not found in {app.config['UPLOAD_FOLDER']}")
+            return "Image not found", 404
+            
         return send_from_directory(app.config['UPLOAD_FOLDER'], filename)
     except Exception as e:
         logger.error(f"Error serving image {filename}: {str(e)}")
-        return "Error serving image", 500
+        return f"Error serving image: {str(e)}", 500
 
 @app.route('/', methods=['GET'])
 def home():
