@@ -239,7 +239,7 @@ class OAuthSignature:
             for k, v in oauth_params.items():
                 if k not in ['realm', 'oauth_signature', 'oauth_token_secret']:
                     all_params.append((k, v))
-                    
+
         elif method.upper() == 'GET':
             for k, v in oauth_params.items():
                 if k not in ['realm', 'oauth_signature']:
@@ -373,7 +373,7 @@ class OAuthSignature:
             return False
 
 app = Flask(__name__)
-app.config['UPLOAD_FOLDER'] = Config.UPLOAD_FOLDER
+app.config['UPLOAD_FOLDER'] = os.path.join(app.root_path, 'images')
 
 db = Database()
 oauth = OAuthSignature(Config.CONSUMER_KEY, Config.CONSUMER_SECRET)
@@ -519,21 +519,8 @@ def payment_finish():
 
 @app.route('/images/<filename>')
 def serve_image(filename):
-    """Simple static file serving for images"""
     try:
-        if '..' in filename or filename.startswith('/'):
-            logger.warning(f"Attempted path traversal with filename: {filename}")
-            return "Access denied", 403
-            
-        safe_path = os.path.join(Config.UPLOAD_FOLDER, filename)
-        if not os.path.exists(safe_path):
-            return "File not found", 404
-            
-        if not os.path.dirname(os.path.abspath(safe_path)) == os.path.abspath(Config.UPLOAD_FOLDER):
-            logger.warning(f"Attempted access outside images directory: {filename}")
-            return "Access denied", 403
-            
-        return send_from_directory(Config.UPLOAD_FOLDER, filename)
+        return send_from_directory(app.config['UPLOAD_FOLDER'], filename)
     except Exception as e:
         logger.error(f"Error serving image {filename}: {str(e)}")
         return "Error serving image", 500
